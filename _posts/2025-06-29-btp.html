@@ -10,7 +10,17 @@ tags: [BTP]
 <h1>BTP(Biometric Template Protection)</h1>
 <br>
 <div id="container-body" align="left">
-  <h2>들어가며..</h2>
+  <ul>
+    <li><a href="#section1">들어가며..</a></li>
+    <li><a href="#section2">Non Invertible Transformation</a></li>
+    <ul>
+      <li><a href="#section2-1">Locally Smooth</a></li>
+      <li><a href="#section2-2">Globally Not Smooth</a></li>
+    </ul>
+    <li><a href="#section3">Performance</a></li>
+    <li><a href="#section4">Cancelable Transform Method</a></li>
+  </ul>
+  <h2 id="section1">들어가며..</h2>
   <p>예전에 지문인식 Security 관련하여 짧게 프로젝트를 진행했던 경험이 있습니다.</p>
   <p>그리고 요즘 다시 찾아보니까 Hardware 보안 기술도 좋아지고 
     딥러닝 기술도 많이 발전하여 해당 기술과 결합하여 사용되는게 트렌드인것 같지만 
@@ -46,7 +56,7 @@ tags: [BTP]
 
   <br>
   <hr>
-  <h2>Non Invertible Transformation</h2>
+  <h2 id="section2">Non Invertible Transformation</h2>
   <figure>
     <img src="/assets/img/Non-invertible-transformation-function.png" width="350" height="350">
     <figcaption>출처: https://www.researchgate.net/figure/Non-invertible-transformation-function_fig4_327156298</figcaption>
@@ -70,7 +80,7 @@ tags: [BTP]
   <p>
     이런 변형을 가할 때 Locally Smooth, Globally Not Smooth 해야합니다.
   </p>
-  <h3>Locally Smooth</h3>
+  <h3 id="section2-1">Locally Smooth</h3>
   <p>
     locally smooth란 지문에서 minutia를 뽑을 때 늘 같은 x, y, theta가 뽑히기가
     어렵습니다. 상황(지문 센서 인식시의 압력이나 수분의 정도, 틀어짐 정도)에 따라
@@ -82,7 +92,7 @@ tags: [BTP]
     즉, 원래는 동일한 minutia인데 상황에 따라 약간의 오차가 있을 때 그때마다 minutia가
     변형되는 point가 너무 달라지게 되면 지문 인식 정확도가 떨어지게 됩니다.
   </p>
-  <h3>Globally Not Smooth</h3>
+  <h3 id="section2-2">Globally Not Smooth</h3>
   <p>
     그러나 이러한 locally smooth 성질을 만족하는 minutiae들이 변형된 
     전체 point들에 대해서는 globally not smooth 해야합니다.
@@ -113,7 +123,7 @@ tags: [BTP]
   </p>
 
   <hr>
-  <h2>Performance</h2>
+  <h2 id="section3">Performance</h2>
   <p>
     여기서 지문의 성능은 보통 FAR과 FRR로 표현을 하게됩니다.
   </p>
@@ -149,7 +159,7 @@ tags: [BTP]
     <br> 이제 Cancelable Transform의 대표적인 3가지 방식에 대해서 설명드리도록 하겠습니다.
   </p>
   <hr>
-  <h2>Cancelable Transform Method</h2>
+  <h2 id="section4">Cancelable Transform Method</h2>
   <p>
     Cancelable Transform의 방식에는 크게 3가지가 있는데
     <br><strong>Cartesian 방식</strong>, 

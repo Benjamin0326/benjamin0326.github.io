@@ -9,7 +9,18 @@ tags: [AFL, Fuzzer, Parallel Fuzzing]
 <h1>AFL(American Fuzzy Lop) Parallel(병렬) Fuzzing</h1>
 <br>
 <div id="container-body" align="left">
-  <h2>들어가며..</h2>
+  <ul>
+    <li><a href="#section1">들어가며..</a></li>
+    <li><a href="#section2">Mutation Stages</a></li>
+    <li><a href="#section3">AFL Parallel Fuzzing</a></li>
+    <ul>
+      <li><a href="#section3-1">1개의 Main Node와 n-1개의 Secondary Instance</a></li>
+      <li><a href="#section3-2">n개의 Main Node</a></li>
+      <li><a href="#section3-3">n개의 Secondary Instance</a></li>
+      <li><a href="#section3-4">Sync Fuzzers</a></li>
+    </ul>
+  </ul>
+  <h2 id="section1">들어가며..</h2>
   <p>
     AFL의 경우 자료도 많고 아시는 분도 많고 해서 오늘은 AFL 중에서
     Parallel Fuzzing에 대해서만 간단하게 알아보도록 하겠습니다.
@@ -38,7 +49,7 @@ tags: [AFL, Fuzzer, Parallel Fuzzing]
   </p>
 
   <hr>
-  <h2>Mutation Stages</h2>
+  <h2 id="section2">Mutation Stages</h2>
   <figure>
     <img src="/assets/img/Mutation_Scheduling_of_AFL.png" width="850" height="350">
     <figcaption>출처: https://www.usenix.org/sites/default/files/conference/protected-files/sec19_slides_lyu.pdf</figcaption>
@@ -106,7 +117,7 @@ tags: [AFL, Fuzzer, Parallel Fuzzing]
   </p>
   <br>
   <hr>
-  <h2>AFL Parallel Fuzzing</h2>
+  <h2 id="section3">AFL Parallel Fuzzing</h2>
   <p>
     그럼 다시 Parallel Fuzzing으로 돌아오도록 하겠습니다.
   </p>
@@ -135,7 +146,7 @@ tags: [AFL, Fuzzer, Parallel Fuzzing]
   <br>
   <br>
   <hr>
-  <h3>1개의 Main Node와 n-1개의 Secondary Instance</h3>
+  <h3 id="section3-1">1개의 Main Node와 n-1개의 Secondary Instance</h3>
   <pre><code>
     Run the first one ("main node", -M) like this: 
     ./afl-fuzz -i testcase_dir -o sync_dir -M fuzzer01 [...other stuff...]
@@ -176,7 +187,7 @@ tags: [AFL, Fuzzer, Parallel Fuzzing]
   </p>
   <br>
   <hr>
-  <h3>n개의 Main Node</h3>
+  <h3 id="section3-2">n개의 Main Node</h3>
   <p><strong>보통 Main Node를 여러 개 두는 것은 추천하지 않습니다!</strong></p>
   <pre><code>
     Note that you must always have one -M main instance! Running multiple -M instances is wasteful!
@@ -203,7 +214,7 @@ tags: [AFL, Fuzzer, Parallel Fuzzing]
 
   <br>
   <hr>
-  <h3>n개의 Secondary Instance</h3>
+  <h3 id="section3-3">n개의 Secondary Instance</h3>
   <p><strong>매우 느리고 복잡한 Target을 fuzzing할 경우 오히려 더 효과적</strong></p>
   <p>
     매우 느리고 복잡한 Target을 퍼징해야 될 경우 
@@ -216,7 +227,7 @@ tags: [AFL, Fuzzer, Parallel Fuzzing]
   <img src="/assets/img/n_secondary_instance_fuzzer03.png" width="350">
   <br><br>
   <hr>
-  <h3>Sync Fuzzers</h3>
+  <h3 id="section3-4">Sync Fuzzers</h3>
   <p>
     마지막으로 Parallel Fuzzing을 수행할 경우 각 Fuzzer들이 어떻게 Sync를 맞추는지
     살펴보고 마무리 하도록 하겠습니다.
