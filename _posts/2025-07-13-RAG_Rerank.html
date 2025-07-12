@@ -1,0 +1,219 @@
+---
+layout: post
+title:  "Toy Project에서 RAG + Rerank 적용기"
+date:   2025-07-12 16:04:00 +0900
+categories: [AI]
+tags: [RAG, Rerank, LLM, AI]
+---
+
+<h1>RAG + Rerank 기반 시스템 설계 및 적용기</h1>
+<br>
+<div id="container-body" align="left">
+  <ul>
+    <li><a href="#section1">들어가며..</a></li>
+    <li><a href="#section2">프로젝트에서의 RAG 구조 개요</a></li>
+    <li><a href="#section3">pgvector 기반 유사도 검색</a></li>
+    <ul>
+        <li><a href="#section3-1">문장 임베딩 방식: Mean Pooling vs CLS Token</a></li>
+    </ul>
+    <li><a href="#section4">현재 Rerank 구조 및 향후(?!) 계획</a></li>
+    <li><a href="#section5">향후 계획 및 마무리</a></li>
+    <ul>
+      <li><a href="#section5-1">참고 (Embedding 전략 비교: Sparse vs Dense)</a></li>
+    </ul>
+  </ul>
+  <h2 id="section1">들어가며..</h2>
+  <p><strong>프로젝트 링크: </strong>
+  <a href="https://github.com/Benjamin0326/lua-monologue" target="_blank">lua-monologue (GitHub)</a></p>
+  <p>
+    요즘 LLM이 안 쓰이는 곳이 어디 있을까요, 개발에서도 보안에서도 LLM과 결합되는 방식이 상당히 많아졌습니다.
+    그래서 LLM을 써보기만 했지 관련해서 Toy project라도 한번 개발해봐야겠다 해서 RAG를 적용한 작은 프로젝트를 하나 했었습니다.
+    오늘은 이 프로젝트와 더불어 RAG/Rerank에 대해서 알아보도록 하겠습니다.
+    <br>
+    ※저도 사실 잘 몰라서 틀린 정보가 많을 수 있습니다 ㄷㄷ 
+  </p>
+  <hr>
+  <h2 id="section2">프로젝트에서의 RAG 구조 개요</h2>
+  <p>
+    <code>lua-monologue</code> 프로젝트는 사용자의 일기나 메시지를 DB에 저장하고, 이를 기반으로 
+    <strong>의미 기반 검색(RAG)</strong>과 <strong>LLM 응답 생성</strong>을 결합한 구조입니다.
+    사용자의 기억을 AI가 보완해주는 형태로, 개인화된 질문 응답 흐름을 구축하는 것을 목표로 하였습니다.
+  </p>
+
+  <pre>
+    [User Input]
+        ↓
+    [Sentence Embedding (InstructorXL)]
+        ↓
+    [pgvector Similarity Search]
+        ↓
+    [Retrieved Messages (top-k)]
+        ↓
+    [LLM Prompt (context 포함)]
+        ↓
+    [LLM Response]
+  </pre>
+  <ul>
+    <li>Embedding 모델: <code>InstructorXL</code> (sentence-transformers)</li>
+    <li>Embedding 방식: <strong>mean pooling</strong> + <strong>CLS token</strong> 병렬 저장</li>
+    <li>DB: PostgreSQL + <code>pgvector</code> 확장 사용</li>
+  </ul>
+
+  <hr>
+  <h2 id="section3">pgvector 기반 유사도 검색</h2>
+  <p>PostgreSQL에서 <code>pgvector</code> 확장을 통해 임베딩 벡터 검색이 가능합니다.</p>
+
+  <p>예시 쿼리:</p>
+  <pre><code>
+  SELECT id, content
+  FROM messages
+  ORDER BY embedding <#> '[임베딩 벡터]'
+  LIMIT 5;
+  </code></pre>
+
+  <ul>
+    <li><code><#></code> 는 cosine distance 연산자, 그 외에도</li>
+    <ul>
+      <li><code><-></code> Euclidean distance 가까운 순 (좌표 공간에서 물리적으로 가까운 정도)</li>
+      <li><code><#></code> Cosine distance 가까운 순 (방향이 가까운 정도)</li>
+      <li><code><=></code> Inner product (dot product) 큰 순(같은 방향 + 길이가 클수록)</li>
+    </ul>
+    <li><code>embedding</code>, <code>embedding_cls</code> 모두 pgvector 타입으로 저장</li>
+  </ul>
+
+  <p>이를 통해 의미 기반 검색을 빠르게 수행할 수 있습니다.</p>
+
+  <h3 id="section3-1">문장 임베딩 방식: Mean Pooling vs CLS Token</h3>
+
+  <ul>
+    <li><strong>Mean Pooling:</strong> 모든 토큰 벡터 평균 → 안정적, 단어 기반 의미 보존</li>
+    <li><strong>CLS Token:</strong> 문장 맨 앞 특수 토큰 출력 → 문장 전체 대표 요약</li>
+  </ul>
+  <p>
+    CLS를 좀더 살펴보면 BERT 계열의 모델에서 문장 전체를 대표하는 Classification 을 위한 특수 요약 토큰으로, 만약 
+    <br><code>예시 문장</code>이 있다면
+    <br><code>[CLS] 예시 문장 [SEP]</code>로 [CLS]는 문장 전체 대표, [SEP]는 문장 구분용으로 그리고 "예시 문장"에 대한 각각의 토큰 [예시], [문장] 이런 식으로 이루어지게 됩니다.
+  </p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>방식</th>
+        <th>장점</th>
+        <th>약점</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Mean Pooling</td>
+        <td>단어 기반 정보 풍부, robust</td>
+        <td>문장 구조 반영 적음</td>
+      </tr>
+      <tr>
+        <td>CLS Token</td>
+        <td>요약된 문장 의미 제공 / 보통 속도 빠름</td>
+        <td>학습 상태 따라 품질 편차</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>보통은 Mean Pooling 방식을 많이 사용하는 것 같지만 lua-monologue 프로젝트에서는 두 가지를 모두 저장해, 
+  향후 <strong>질문 유형/문맥 유형에 따라</strong> 다르게 활용할 수 있도록 설계하였습니다.</p>
+
+  <pre>
+  입력 문장 → InstructorXL 모델 →
+  mean 벡터 & CLS 벡터 → pgvector에 저장
+  </pre>
+
+  <hr>
+  <h2 id="section4">현재 Rerank 구조 및 향후(?!) 계획</h2>
+  <p>
+    ※ 사실 추가로 더 고도화를 할지 모르겠음 ㅎㅎ
+  </p>
+
+  <p>현재는 <strong>1차 유사도 검색 결과를 바로 LLM에 전달</strong>하지만, 
+    향후에는 <strong>Reranker 모델을 도입</strong>하여 응답 품질을 높일 계획입니다.</p>
+
+  <p><strong>Rerank 전략 구성(계획만)</strong></p>
+  <ol>
+    <li>top-10 유사도 검색</li>
+    <li>LLM 또는 BERT 기반 Reranker로 재정렬</li>
+    <li>시간순/감정/주제 가중치 반영</li>
+  </ol>
+
+  <pre>
+  [User Input]
+      ↓
+  [Vector Search → top-10]
+      ↓
+  [Reranker (LLM or BERT)]
+      ↓
+  [최종 top-k 문맥]
+      ↓
+  [LLM Prompt 생성]
+  </pre>
+
+  <p>이렇게 하면 유사하지만 덜 관련된 응답을 필터링하고, 
+  실제 질문에 더 관련성 높은 맥락을 제공할 수 있지 않을까 싶습니다.</p>
+
+  <hr>
+  <h2 id="section5">향후 계획 및 마무리</h2>
+  <p>그 외에도 추가로 아래와 같이 RAG 관련해서 더 해보고 싶은 계획들은 있지만 적어만 보고 마무리 하도록 하겠습니다.</p>
+  <ul>
+    <li>시간 기반 가중치 및 감정 기반 문맥 우선순위 적용</li>
+    <li>hybrid RAG: Sparse + Dense 통합 검색</li>
+  </ul>
+
+  <p>먼저 시간에 따라 사용자의 성향이 충분히 달라질 수 있어 최신 정보가 훨씬 중요하게 작용할 수 있다고 생각되고 감정에 따라서도 성향이 달라질 수 있다고도 생각되어
+    위에 따른 가중치나 우선순위 조정도 가능하면 해보고 싶었습니다.
+  </p>
+  <p>
+    Spare는 아래에서 간단하게 설명하겠지만 보통 단어, 키워드 기반 유사도 검색에서 많이 사용됩니다. 
+    그런데 예전에 자동분류 등을 위해서 유사도 판별을 했을 때 의외로 Keyword 기반 Sparse가 더 좋은 성능을 낸 케이스도 존재가 하여
+    이 둘을 hybrid로 사용하는 것도 충분히 고려해볼만 하다고 생각했습니다. 
+    <br>(코드등이 담겨있는 복잡한 Report에 대한 유사도 비교에선 코드가 있어서 그런지 단어 기반 유사도가 잘 찾아준 Report 유형도 존재했습니다.
+    아무래도 코드나 전문 용어에서 의미기반을 추출하긴 힘들었어서 같은 코드, 같은 파일 위치 등을 잘 파악할 수 있지 않았을까 싶습니다.)
+  </p>
+
+  <p>마무리로 해당 프로젝트는 완성형이 아니며, 실험과 학습의 목적이 컸습니다.
+  RAG 구조를 처음 설계하거나 Embedding에 대해 고민 중이라면,  
+  저와 비슷한 고민에 대해서 같이 생각해볼 수 있는 도움이 되었길 바라며 오늘 글도 마무리하도록 하겠습니다.
+  </p>
+
+  <h3 id="section5-1">참고 (Embedding 전략 비교: Sparse vs Dense)</h3>
+
+  <table>
+    <thead>
+      <tr>
+        <th>구분</th>
+        <th>Sparse Embedding</th>
+        <th>Dense Embedding</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>기반</td>
+        <td>단어 빈도 (TF-IDF, BM25)</td>
+        <td>딥러닝 모델 (BERT, Instructor 등)</td>
+      </tr>
+      <tr>
+        <td>차원</td>
+        <td>수천~수만 차원 (희소)</td>
+        <td>고정 저차원 (예: 768, 1024)</td>
+      </tr>
+      <tr>
+        <td>장점</td>
+        <td>정확한 키워드 매칭</td>
+        <td>의미 기반 유사도</td>
+      </tr>
+      <tr>
+        <td>단점</td>
+        <td>의미 유사어 약함</td>
+        <td>오류 가능성, 해석 어려움</td>
+      </tr>
+    </tbody>
+  </table>
+
+
+
+
