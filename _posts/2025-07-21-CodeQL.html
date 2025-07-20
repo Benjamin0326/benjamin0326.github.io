@@ -1,0 +1,194 @@
+---
+layout: post
+title:  "LLM + CodeQL: 보안 취약점 자동 분석 시대"
+date:   2025-07-20 16:21:00 +0900
+categories: [Security]
+tags: [CodeQL, IRIS, StaticAnalysis]
+---
+
+<h1>LLM + CodeQL: 보안 취약점 분석 자동화의 핵심 도구</h1>
+<br>
+<div id="container-body" align="left">
+  <ul>
+    <li><a href="#section1">들어가며..</a></li>
+    <li><a href="#section2">CodeQL이란?</a></li>
+    <li><a href="#section3">CodeQL 분석 유형: problem vs path-problem</a></li>
+    <li><a href="#section4">LLM + CodeQL</a></li>
+    <ul>
+      <li><a href="#section4-1">1. CodeQL로 LLM에 전달할 함수 코드/위치 정보 뽑기</a></li>
+      <li><a href="#section4-2">2. LLM이 CodeQL 쿼리를 자동으로 작성하고 결과 검증</a></li>
+    </ul>
+    <li><a href="#section5">실전 TIP: CodeQL RAM 오류 해결법</a></li>
+    <li><a href="#section6">마무리</a></li>
+  </ul>
+  <h2 id="section1">들어가며..</h2>
+  <p>
+  최근 LLM + Security 주제의 논문들을 찾아보면, LLM이 코드를 분석을 과정에서
+  <code>CodeQL</code>을 함께 사용하는 사례가 많은 것 같습니다. 특히, LLM이 코드의 컨텍스트를 이해할 필요가 있을 때 CodeQL의 쿼리 결과를 제공하거나,
+  취약점 탐지를 자동화 과정에서 CodeQL을 기반으로 사전 탐색을 수행하는 구조가 자주 등장하는 것 같습니다.
+  </p>
+
+  <p>그래서 이번 기회에<strong>CodeQL</strong>에 대해서 정리를 해볼까 합니다.</p>
+  <p>그리고 나중에 기회가 되면 CodeQL을 활용한 자동화 툴에 대해서도 살펴보도록 하겠습니다.</p>
+  <hr>
+  <h2 id="section2">CodeQL이란?</h2>
+  <a href="https://codeql.github.com/">CodeQL Github</a>
+  <p>
+  <code>CodeQL</code>은 GitHub Security Lab에서 만든 정적 분석 프레임워크로,
+  코드를 <strong>데이터베이스로 변환</strong>하고 <strong>쿼리 언어(QL)</strong>로 질의함으로써
+  취약점을 탐지하는 형식입니다.
+  </p>
+
+  <p>
+  즉, 기본 개념은 "코드를 데이터처럼 탐색한다"고 볼 수 있으며,
+  각 함수나 변수, Flow 등이 <code>AST</code>나 <code>IR</code> 형태로 추출되어
+  쿼리로 분석 가능합니다.
+  </p>
+
+  <p>지원하는 언어는 C/C++, C#, Go, Java/Kotlin, JavaScript, Python, Ruby, Rust, TypeScript 등이 있습니다.
+    다만, 하나의 Query로 모든 언어를 대상으로 실행할 수 있는것은 아니고 언어마다 각자 다른 Query를 작성해야합니다.
+  </p>
+  <p>그리고 언어마다 각 특징이 있기 때문에 기존 Query를 다른 언어를 Target으로 작성할 때 기능이 완전히 보존되게 하면서 변환하기도 어렵습니다.
+    <br>예를 들어, LLM에 특정 함수와 관련된 정보를 넘겨주려고 CodeQL Query를 활용한 적이 있었는데 Java의 경우 javadoc을 가져오는 Query 구문이 존재하여
+    해당 함수에 해당하는 주석 내용도 같이 넘겨줄 수 있지만 C/C++에서는 이에 대응되는 Query 구문이 없어서 CodeQL 외적으로 주석을 가져와서 넘겨줘야 했습니다.
+  </p>
+  <p>그리고 분석의 대략적인 흐름은 Project → CodeQL DB → Query → Result으로 Project에서 CodeQL DB를 생성하고 생성된 DB를 타겟으로
+    Query를 통해 Result를 가져오는 흐름입니다.
+  </p>
+  <p>
+    그리고 CodeQL을 사용할 수 있는 방법은 크게 두 가지로 CLI를 이용하거나 혹은 VS Code의 Plugin를 활용하는 방법입니다. 결과를 확인할 때는 VS Code Plugin을 통하면
+    보다 시각적인 결과를 확인할 수 있었습니다.
+  </p>
+  <hr>
+  <h2 id="section3">CodeQL 분석 유형: problem vs path-problem</h2>
+
+  <table>
+    <thead>
+      <tr>
+        <th>유형</th>
+        <th>설명</th>
+        <th>대표 예</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>problem</code></td>
+        <td>위험한 코드 조각 1곳만 지정 (정적 패턴 탐지)</td>
+        <td>strcpy, system() 호출 등</td>
+      </tr>
+      <tr>
+        <td><code>path-problem</code></td>
+        <td>입력 → 취약 지점까지 흐름 전체 추적 (taint tracking)</td>
+        <td>user input → strcpy → overflow</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <br>
+  <p>
+    그래서 보통 LLM Prompt에 Code 정보를 넘겨주기 위한 목적에서는 <code>path-problem</code>을 사용할 필요가 없지만 보통 
+    취약점 탐지 자동화 목적에서는 <code>path-problem</code>을 주로 활용해서 취약점을 탐지하는 식이 많습니다.
+  </p>
+  <p>
+    Query 작성과 관련된 자세한 내용은 <a href="https://codeql.github.com/docs/writing-codeql-queries/about-codeql-queries/">About CodeQL queries</a>
+    페이지에서 확인할 수 있습니다.
+    <br>그리고 저는 보통 CPP를 기준으로 Query를 작성하여 보통 해당 <a href="https://codeql.github.com/docs/codeql-language-guides/codeql-library-for-cpp/#codeql-library-for-cpp">CodeQL library for C and C++</a>
+    를 참고를 많이 하는 편입니다.
+    <br>마지막으로 기본 제공되는 Query를 보통 어떻게 Query를 작성하는지 감을 잡으실 수도 있으실 것 같습니다. 
+    <a href="https://github.com/github/codeql/tree/main/cpp/ql/src">CodeQL CPP QL Pack</a>
+  </p>
+  <hr>
+
+  <h2 id="section4">LLM + CodeQL</h2>
+  <p>
+    제가 최근 LLM + Security를 찾아보다가 CodeQL이 LLM과 같이 사용되는 케이스는 크게 두 가지로 확인됩니다.
+    (물론 몇가지 안 찾아봐서 두 케이스만 본 걸수도 있습니다.. ㅎㅎ)
+    <br>LLM Prompt에 코드와 관련된 정보를 넘겨주기 위해 CodeQL을 사용하는 케이스와
+    <br>코드 내 취약점을 자동으로 찾기 위해 LLM을 통해 CodeQL Query를 자동으로 작성하고 CodeQL Query 결과를
+    LLM을 통해 다시 한번 검증하는 케이스가 있습니다.
+  </p>
+  <h3 id="section4-1">1. CodeQL로 LLM에 전달할 함수 코드/위치 정보 뽑기</h3>
+  <p>
+    보통 LLM Prompt에 함수 관련 질의를 할 때 함수 단위로 파일, 라인, 시그니처를 추출하여 같이 정보를 넘겨주는 형식입니다.
+    보통 아래와 같은 CodeQL Query를 사용할 수 있습니다.
+    <pre><code>
+      import cpp
+
+      from Function func
+      where func.getName() = "{Query Function Name}"
+      select
+        func,
+        func.getFile().getRelativePath(),
+        func.getLocation().getStartLine(),
+        func.getLocation().getEndLine(),
+        "Function location info"
+        </code>
+    </pre>
+  </p>
+
+  <h3 id="section4-2">2. LLM이 CodeQL 쿼리를 자동으로 작성하고 결과 검증</h3>
+  <p>
+    이 케이스는 워냑 다양한 케이스가 있어서 paper 하나를 보여주는게 더 좋을 것 같습니다.
+    <br><a href="https://arxiv.org/abs/2405.17238">IRIS: LLM-Assisted Static Analysis for Detecting Security Vulnerabilities</a>
+    <br><a href="https://github.com/iris-sast/iris">IRIS github</a>
+    <br>
+    <figure>
+      <img src="/assets/img/iris_arch.png" width="800">
+      <figcaption>출처: https://github.com/iris-sast/iris?tab=readme-ov-filef</figcaption>
+    </figure>
+    <br>
+    대략적으로 보면
+    <br><strong>1.</strong> External API와 Internal Function을 CodeQL을 통해 추출합니다.
+    이렇게 따로 추출하는 이유는 External API의 경우 LLM Model에서도 해당 정보를 알기 때문이고 
+    직접 구현한 Internal Function의 경우 주석등과 함께 정보를 전달해줘야하기 때문에 따로 추출하게 됩니다.
+    <br><strong>2.</strong> 그리고 이런 API Candidate들을 LLM에게 물어 해당 함수와 파라미터가 Taint analysis에서 Source이거나 Sink 혹은 Taint Propagator인지
+    분류를 하게 됩니다. 
+    <br><strong>3.</strong> 그 이후 이렇게 분류된 Source, Sink, Propagator를 적용하여 CodeQL Query를 재작성합니다.
+    CodeQL Query는 기본적으로 어느 정도 작성되어 있고 Source, Sink, Propagator만 추가할 수 있는 구조로 
+    LLM에서 완전히 CodeQL Query를 작성해주진 않습니다. 
+    (왜냐하며 실제로 LLM에 부탁해보니까 LLM이 제대로 CodeQL Query를 작성해주지 못했습니다. 버전등이 다양해서 그런지 Query 문법 오류가 상당히 많이 존재했습니다.)
+    <br><strong>4.</strong> 그리고 CodeQL Query 결과를 다시 LLM에 보내 해당 결과가 실제 취약한지 아닌지 판별하게 됩니다.
+    <br><br>그러나 Evaluation 을 보면.. 검출능력은 많이 향상되었으나 생각보다 False Positive가 많이 줄진 않은 것을 확인할 수 있습니다.
+    <figure>
+      <img src="/assets/img/iris_statics.png" width="800">
+      <figcaption>출처: https://arxiv.org/pdf/2405.17238</figcaption>
+    </figure>
+
+    <br>
+    참고로 해당 프로젝트는 Java 언어만을 Target으로 하고 있습니다.
+    다른 언어를 지원하기 위해선 코드 수정과 CodeQL Query를 새로 작성해야 합니다.(DB 생성 자동화 부분은 빼고 생각하더라도...)
+  </p>
+  <hr>
+
+  <h2 id="section5">실전 TIP: CodeQL RAM 오류 해결법</h2>
+  <p>위의 IRIS Tool을 C/C++로 확대 적용하면서 겪게 된 오류인데 너무 큰 프로젝트를 타겟으로 CodeQL Query가 실행될 때
+    가끔 RAM 관련 오류가 발생합니다. 이땐 오히려 ram option으로 더 큰 ram size를 주면 안되고 더 적은 값을 줘야 좋습니다.
+  </p>
+  <pre><code>
+  java.lang.OutOfMemoryError: Java heap space
+  </code></pre>
+
+  <p>
+  이 에러가 발생하면 RAM을 늘리기보다는 <strong><code>--ram</code> 값을 줄이는 것이 효과적일 수 있습니다.</strong>.
+  예:
+  </p>
+  <pre><code>
+  codeql database analyze mydb myquery.ql --ram=4096 --threads=1
+  </code></pre>
+
+  <p>
+  RAM은 CodeQL의 병렬도와 작업 단위를 조절하는 역할이므로,
+  너무 높게 설정하면 오히려 전체 작업이 한 번에 몰려 실패할 수 있습니다.
+  <br>필요 시 <code>JAVA_TOOL_OPTIONS="-Xmx4g"</code> 로 Java Heap 메모리 직접 조정도 가능합니다.
+  <br>VS Code Plugin을 사용할 경우 settings.json에서 codeql 관련에서도 RAM 용량을 조정할 수 있습니다.
+  </p>
+
+  <h2 id="section6">마무리</h2>
+  <p>
+    요즘 LLM + Security 관련 주제를 찾아보다가 생각보다 CodeQL을 활용하는 경우가 많아서 이렇게 한번 CodeQL에 대해서 간략하게만
+    정리를 해보았습니다.
+    <br>CodeQL Query를 작성하면서 생각보다 LLM이 CodeQL Query를 작성해주지 못한다는 것을 느꼈고
+    <br>생각보다 자동화 도구들은 C/C++ 타겟을 하지 않는다는 것도 많이 느꼈으며
+    <br>CodeQL Query로 짜는 사람에 따라 퀄리티 차이가 천차만별이라는 것도 느꼈습니다.
+    <br>추후 시간이 되면 IRIS 관련 내용도 정리하면 좋을 것 같습니다.
+  </p>
