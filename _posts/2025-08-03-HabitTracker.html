@@ -1,0 +1,312 @@
+---
+layout: post
+title:  "Jetpack Compose로 간단한 습관앱 만들기"
+date:   2025-08-03 11:00:00 +0900
+categories: [Android, JetpackCompose, RoomDB]
+tags: [Android, Compose, UI, Room, SideProject]
+---
+
+<h1>Jetpack Compose로 만드는 간단한 습관앱</h1>
+<br>
+<div id="container-body" align="left">
+  <ul>
+    <li><a href="#section1">들어가며..</a></li>
+    <li><a href="#section2">Imperative vs Declarative UI</a></li>
+    <li><a href="#section3">Jetpack Compose란?</a></li>
+    <li><a href="#section4">RoomDB란?</a></li>
+    <li><a href="#section5">습관 앱</a></li>
+    <li><a href="#section6">마무리</a></li>
+  </ul>
+  <h2 id="section1">들어가며..</h2>
+  <p><strong>프로젝트 링크: </strong>
+  <a href="https://github.com/Benjamin0326/HabitTracker" target="_blank">HabitTracker (GitHub)</a></p>
+  <p>
+    이번에 Android의 <strong>Jetpack Compose</strong>를 활용해 작은 습관관리 앱을 만들었습니다.<br>
+    기존 XML 기반 개발과는 달리 <strong>선언형 UI(Declarative UI)</strong> 방식으로 구성되며, RoomDB를 통해 로컬 저장까지 연동했습니다.
+    <br>저는 사실 Android 개발이 익숙하지도 않고 경험이라고 해봐야 캡스톤 과제와 공모전 나갈 때 제출한 앱 그리고 취미삼아 만들어본 앱 정도밖에 없으며
+    그때 당시에는 XML 기반 UI + RecyclerView + Adapter 패턴을 많이 사용했습니다.<br>
+    그런데 이번에 여차저차 안드로이드 관련 취약점을 보다가 안드로이드 앱 개발을 다시 한번 해보고 싶은 생각이 들어서 살펴보던 중 Jetpack Compose를 알게 되었고
+    정말 간단하게 습관앱을 하나 만들었습니다. 기능이라고 해봐야 습관 추가, 수정, 삭제 뿐이지만요 ㅎㅎ
+    <br>
+    ※ 저도 잘 몰라서 혹시 틀린 정보가 있으면 메일로 알려주시면 감사하겠습니다!
+  </p>
+  <hr>
+  <h2 id="section2">Imperative vs Declarative UI</h2>
+  <p>
+  <table>
+    <thead>
+      <tr>
+        <th>구분</th>
+        <th>Imperative UI (명령형)</th>
+        <th>Declarative UI (선언형)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>UI 구성 방식</td>
+        <td>"무엇을 어떻게 그릴지" 단계별로 명령</td>
+        <td>"이 상태일 때 UI는 이렇게 생겼다"를 선언</td>
+      </tr>
+      <tr>
+        <td>코드 스타일</td>
+        <td>순차적, 절차 중심</td>
+        <td>상태 기반, 선언 중심</td>
+      </tr>
+      <tr>
+        <td>UI 업데이트</td>
+        <td>변경 시 수동으로 반영(notifyDataSetChanged())</td>
+        <td>상태 변경 → 자동 UI 업데이트</td>
+      </tr>
+      <tr>
+        <td>예시 프레임워크</td>
+        <td>Android XML + View / Swing</td>
+        <td>Jetpack Compose, SwiftUI, React, Vue</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h4>예시 비교:</h4>
+
+  <pre><code class="language-java">// Imperative 방식 (기존 Android)
+  textView.setText("Hi");
+  textView.setColor(Color.RED);
+  </code></pre>
+
+  <pre><code class="language-kotlin">// Declarative 방식 (Compose)
+  @Composable
+  fun Greeting(name: String) {
+      Text("Hi $name", color = Color.Red)
+  }
+  </code></pre>
+
+  <p>
+    즉, UI 업데이트를 위해서 명령형 방식의 경우 데이터 변경 후 UI갱신을 위한 Method, 위의 예에서는 setText()나 setColor()등을 호출해줘야 했습니다.
+    그러나 선언형 UI의 경우 수정할 데이터를 '주입'해주기만하면 됩니다. 기존 명령형 UI 방식보다 <strong>라인수가 줄어든다</strong>는 것을 알 수 있습니다.
+    위의 예제에서는 잘 보여지진 않지만 실제로 RecylerView를 어떻게 사용했는지를 보면 우선 xml을 정의해주어야하고 RecyclerView.Adapter 또한 정의해줘야 합니다.
+    이렇게 Adapter 정의가 끝난 후엔 Activity 내에서 Adapter를 Activity에 바인딩하는 코드 또한 작성해줘야 했지만 Compose에서는 아래와 같이 간단하게 리스트를 작성할 수 있습니다.
+    <pre><code>
+      @Composable
+      fun TestListView() {
+        LazyColumn() {
+          items(items = item) { item ->
+            TestItem(item = item)
+          }
+        }
+      }
+
+      @Composable
+      fun TestItem(item: item) {
+        Text("Test")
+      }
+    </code></pre>
+    혹시나 RecylcerView 구현 방법을 모르시는 분은 해당 github 코드를 참고하시면 될 것 같습니다.
+    <br><a href="https://github.com/android/views-widgets-samples/tree/main/RecyclerView" target="_blank">RecyclerView Github</a>
+  </p>
+
+
+  <hr>
+  <h2 id="section3">Jetpack Compose란?</h2>
+  <p>
+  <code>Jetpack Compose</code>는 Android의 공식 선언형 UI 툴킷입니다.<br>
+  XML 없이 Kotlin 코드만으로 UI를 만들 수 있고, 상태(state)를 중심으로 동작합니다.
+  </p>
+
+  <h4>주요 특징:</h4>
+  <ul>
+    <li>XML 없이 Kotlin 코드로 UI 구성</li>
+    <li>RecyclerView 없이 리스트 구현 가능 (LazyColumn)</li>
+    <li>State에 따라 UI가 자동으로 갱신됨</li>
+  </ul>
+
+  <p>
+    자세한 내용은 아래 문서를 참고하시면 좋을 것 같습니다.<br>
+    <a href="https://developer.android.com/jetpack?gclsrc=aw.ds&gad_source=1&gad_campaignid=21831783723&gbraid=0AAAAAC-IOZkCC8yq_fmfHzhN_ltm9osHy&gclid=CjwKCAjw7rbEBhB5EiwA1V49nc1uXXkGU6He64qAw8reNv0kgneV0i_KUEsTCgmRia0YZ2g8F3rN1hoCEQsQAvD_BwE&hl=ko" target="_blank">
+      Android Jetpack Compose
+    </a>
+  </p>
+
+  <hr>
+  <h2 id="section4">RoomDB란?</h2>
+  <p>
+  <code>Room</code>은 SQLite를 쉽게 다룰 수 있게 해주는 Android용 ORM입니다.<br>
+  안드로이드 앱에서 로컬 데이터 저장이 필요할 때 가장 많이 사용하는 공식 라이브러리입니다.
+  </p>
+
+  <h4>장점:</h4>
+  <ul>
+    <li>SQL 대신 Kotlin/Java 코드로 데이터 정의 가능</li>
+    <li>LiveData / Flow와 자연스럽게 연동 (즉, 데이터가 바뀔 때 자동으로 감지해서 알려주는 기능을 지원)</li>
+    <li>ViewModel과 함께 MVVM 구조에 적합</li>
+  </ul>
+  <p>
+    이 또한 자세한 내용은 아래 문서를 참고하면 좋을 것 같습니다.
+    <br><a href="https://developer.android.com/training/data-storage/room?hl=ko" target="_blank">Save data in a local database using Room</a>
+  </p>
+
+  <hr>
+  <h2 id="section5">습관 앱</h2>
+  <a href="https://github.com/Benjamin0326/HabitTracker" target="_blank">HabitTracker (GitHub)</a></p>
+  <h4>주요 기능</h4>
+  <ul>
+    <li>습관 생성</li>
+    <li>습관 완료 체크</li>
+    <li>완료된 습관 일괄 삭제</li>
+    <li>습관 수정</li>
+  </ul>
+
+  <hr>
+
+  <h4>습관 생성</h4>
+
+  <pre><code class="language-kotlin">
+    Button(
+        onClick = {
+            if (newHabitText.isNotBlank()) {
+                viewModel.insert(Habit(name = newHabitText))
+                newHabitText = ""
+            }
+        },
+    ) {
+        Text("추가하기")
+    }
+  </code></pre>
+
+  <hr>
+
+  <h4>습관 완료 체크</h4>
+
+  <pre><code class="language-kotlin">
+    Checkbox(
+      checked = habit.isCompleted,
+      onCheckedChange = { onToggle() }
+    )
+
+    //...
+    
+    HabitItem(
+        habit = habit,
+        onToggle = {
+            viewModel.update(habit.copy(isCompleted = !habit.isCompleted))
+        },
+        onTextClick = {
+            // ...
+        }
+    )
+  </code></pre>
+
+  <hr>
+
+  <h4>완료된 습관 일괄 삭제</h4>
+
+  <pre><code class="language-kotlin">
+  Button(
+      onClick = {
+          showDialog = true
+      },
+  ) {
+      Text("삭제하기")
+  }
+
+  // ...
+
+DeleteConfirmationDialog(
+  showDialog = showDialog,
+  onDismiss = { showDialog = false },
+  onConfirm = {
+      val completedHabits = habits.filter { it.isCompleted }
+      for (completedHabit in completedHabits) {
+          viewModel.delete(completedHabit)
+      }
+      showDialog = false
+  }
+)
+
+@Composable
+fun DeleteConfirmationDialog(
+    showDialog: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    if (showDialog) {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("정말 삭제하시겠어요?") },
+            text = { Text("선택된 습관이 모두 삭제됩니다.")},
+            confirmButton = {
+                TextButton(onClick = onConfirm) {
+                    Text("확인")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismiss) {
+                    Text("취소")
+                }
+            }
+        )
+    }
+}
+  </code></pre>
+
+  <hr>
+
+  <h4>습관 수정</h4>
+
+  <pre><code class="language-kotlin">
+    onTextClick = {
+      selectedHabit = habit
+  }
+
+  // ...
+
+  selectedHabit?.let { habit ->
+    AlertDialog(
+        onDismissRequest = {
+            selectedHabit = null
+            modifiedHabitText = ""},
+        title = { Text("수정하기") },
+        text = {
+            OutlinedTextField(
+                value = modifiedHabitText,
+                onValueChange = { modifiedHabitText = it },
+                label = { Text("수정할 습관 입력") },
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                if (modifiedHabitText.isNotBlank()) {
+                    viewModel.update(Habit(
+                        id = selectedHabit!!.id,
+                        name = modifiedHabitText,
+                        isCompleted = selectedHabit!!.isCompleted
+                    ))
+                    modifiedHabitText = ""
+                }
+                selectedHabit = null
+            }) {
+                Text("확인")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = {
+                selectedHabit = null
+                modifiedHabitText = ""
+            }) {
+                Text("취소")
+            }
+        }
+    )
+}
+  </code></pre>
+
+  <hr>
+  <h2 id="section6">마무리</h2>
+  <p>
+    요즘 웹이든 앱이든 대부분의 UI 개발에서 State 기반 선언형 UI가 많이 사용되는 것 같습니다.
+    Vue.js 같은 경우엔 처음 사용할때부터 선언형 UI가 적용되어 있어서 편하다는 생각을 못했는데
+    이번에 Android에서 기존의 명령형 UI에서 선언형 UI로 바뀐 부분을 체감해보니 확실히 편한 느낌을 많이 받을 수 있었습니다.
+    이번엔 맛보기뿐이였지만 언제가 될진 모르겠지만 정말 좋은 아이디어가 있다면 
+    다시 한번 Android 앱 개발에 도전해보고 싶은 생각이 드네요 ㅎㅎ
+    <br>오!.. "다시 한번"의 띄어쓰기가 궁금해서 찾아봤는데 다시 한번이 맞네요. 다시 한번의 형태에서 한번은 항상 붙여쓰는거래요.
+    <a href="https://www.scourt.go.kr/portal/gongbo/PeoplePopupView.work?gubun=24&seqNum=2850" target="_blank">[조사심의관 코너] '한 번'에 관하여 '한번' 알아봅시다</a>
+  </p>
