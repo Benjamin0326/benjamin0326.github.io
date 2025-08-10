@@ -1,0 +1,175 @@
+---
+layout: post
+title:  "Arm CCA(Confidential Compute Architecture)에 대해서"
+date:   2025-08-10 16:00:00 +0900
+categories: [Arm]
+tags: [Arm, CCA, Condifential Compute Architecture]
+---
+
+<h1>Arm CCA Introduction</h1>
+<br>
+<div id="container-body" align="left">
+  <ul>
+    <li><a href="#section1">들어가며..</a></li>
+    <li><a href="#section2">CCA를 구성하는 요소</a></li>
+    <ul>
+      <li><a href="#section2-1">Realm</a></li>
+      <li><a href="#section2-2">Realm Management Monitor(RMM)</a></li>
+      <li><a href="#section2-3">Granule Protection Table(GPT)</a></li>
+    </ul>
+    <li><a href="#section3">CCA 동작 흐름</a></li>
+    <li><a href="#section4">RME관련 시스템 레지스터</a></li>
+    <li><a href="#section5">활용 사례</a></li>
+    <li><a href="#section6">마무리</a></li>
+  </ul>
+  <h2 id="section1">들어가며..</h2>
+  <p>
+    예전에 과제를 진행하면서 Arm 아키텍처에 대해서 공부한 적이 있었습니다. 그때는 거의 Armv8을 보았었고
+    그 이후 따로 공부는 안하고 있었는데 우연찮게 Armv9 CCA에 대해서 보게되어 해당 내용도 알아두면 좋겠다는
+    생각이 들어 이렇게 Armv9 CCA에 대해서 간단하게 글을 작성해보려고 합니다.
+    <br>
+    CCA(Confidential Computing Architecture)는 Arm사에서 `21년에 공개한 Armv9에 새롭게 추가된 기능입니다.
+    CCA가 도입된 이유는 요즘 클라우드 환경에서 컴퓨터를 사용하는 빈도가 높은데 서버 어딘가에 중요한 데이터를 저장할 경우
+    <strong>클라우드 환경에서도 데이터와 코드를 보호</strong>할 수 있는 보안환경을 구축하는 목적입니다.
+    <br>
+    <br>
+    여기서 먼저 <strong>Confidential Computing</strong>에 대해 먼저 살펴보면 이는 실행 중인 데이터(Data-in-use)를 보호하기 위해, 
+    하드웨어 기반의 신뢰할 수 있는 격리 실행 환경(TEE, Trusted Execution Environment)을 제공하는 기술입니다.
+    기존 보안 기능들은 주로 저장 시(Data-at-rest)나 전송 시(Data-in-transit) 데이터 암호화에 집중했지만, 
+    Confidential Computing은 CPU가 실행하는 동안 메모리에 적재된 데이터까지 암호화, 격리하여 보호합니다.
+
+    Arm의 기존 TEE 기술인 TrustZone은 보안 OS와 일부 보안 애플리케이션 실행을 위한 ‘보안 월드’를 
+    제공하는 비교적 제한된 모델이었습니다. 반면 Armv9의 Confidential Compute Architecture(CCA)는 ‘Realm’이라는 
+    새로운 격리 환경을 도입해, 운영체제나 하이퍼바이저조차 접근할 수 없는 수준의 보호를 제공하며, 
+    VM이나 전체 워크로드 단위로 범용적인 Confidential Computing을 지원합니다.
+    <br>
+    <br>
+    ※ 그리고 혹시 틀린 정보가 있으면 메일로 알려주시면 감사하겠습니다!
+  </p>
+  <hr>
+  <h2 id="section2">CCA를 구성하는 요소</h2>
+  <p>관점에 따라 다르겠지만 저는 아래와 같이 3가지 요소를 소개하도록 하겠습니다.</p>
+  <h3 id="section2-1">Realm</h3>
+  <p>
+    <ul>
+      <li>CCA에서 새롭게 정의된 격리 실행 환경</li>
+      <li>기존 TrustZone의 Secure World와 달리, Realm은 Non-secure World와 Secure World 모두로부터 격리</li>
+      <li>하이퍼바이저조차 Realm 내부 메모리에 접근이 불가</li>
+    </ul>
+    Realm 상태에서 주로 기밀 데이터 처리나 클라우드 환경의 안전한 VM을 실행합니다.
+    <br>아래 그림을 보면 왼쪽에 Realm State가 추가된 것을 확인하실 수 있습니다.
+    <figure>
+      <img src="/assets/img/Arm/Realm.png" height="350">
+      <figcaption>출처: https://trustedfirmware-a.readthedocs.io/en/latest/components/realm-management-extension.html</figcaption>
+    </figure>
+    CCA 아키텍처에서는 위 그림과 같이 4개의 Security 월드로 구성됩니다.
+    <ul>
+      <li>Non-Secure World</li>
+      <li>Secure World</li>
+      <li>Realm World</li>
+      <li>Root World</li>
+    </ul>
+    Realm 월드에는 EL0~ EL2 와 같은 익셉션 레벨에서 소프트웨어가 실행됩니다. Realm 상태의 EL0는 R-EL0라고 하며 유저 애플리케이션이 실행되며
+    그 아래 Realm 상태의 EL1인 R-EL1에서는 다른 시큐리티 상태와 같이 운영체제 커널이 실행됩니다. 그리고 마지막으로 Realm 상태의 EL2에서는
+    RMM(Realm Management Monitor)이 실행됩니다.
+  </p>
+  <h3 id="section2-2">Realm Management Monitor(RMM)</h3>
+  <p>
+    <ul>
+      <li>Realm의 생성, 삭제, 스케쥴링, 인터럽트 처리, 실행 제어 등을 담당하는 관리 소프트웨어</li>
+      <li>EL2(하이퍼바이저 레벨)에서 동작, Non-Secure 상태에서 실행되는 하이퍼바이저에 의존</li>
+      <li>Realm과 Non-secure World간의 경계 관리</li>
+    </ul>
+    특정 데이터가 Confidential 환경에서 처리가 필요할 경우 먼저 Non-Secure 상태에서 Realm 생성 요청을 하게됩니다.
+    그러면 RMM은 이 요청을 받아 Realm을 생성하게 됩니다. (여러 Realm 생성도 가능)
+    <br>그리고 RMM은 GPT(Granule Protection Table)을 관리하고 GPC(Granule Protection Check)를 통해 다른 Securiy 상태에서 
+    지정 페이지에 접근하지 못하도록 처리합니다. 
+  </p>
+  <h3 id="section2-3">Granule Protection Table(GPT)</h3>
+  <p>
+    <ul>
+      <li>메모리의 최소 단위(Granule)별 접근 권한과 World(Non-Secure, Secure, Realm) 관리</li>
+      <li>CPU의 Granule Protection Check 메커니즘에 의해 접근 제어</li>
+      <li>하드웨어 수준에서 잘못된 접근 차단</li>
+    </ul>
+    Realm 상태에서의 핵심은 Granule 보호 체크(GPC)이며 GPC는 GPT를 통해 동적으로 메모리 접근 권한을 제어합니다.
+    핵심은 GPT에 등록된 페이지만 Realm 상태에서만 접근 가능하게 실행을 제한하는 것입니다.
+    <br>만약 Realm 상태가 아닌 다른 상태에서 보호되는 주소공간에 접근하게 되면 엑세스 위반으로 판단하여 페이지 폴트가 발생합니다.
+    이런 유형의 폴트를 GPF(Granule Protection Fault)라 합니다.
+  </p>
+  <hr>
+  <h2 id="section3">CCA 동작 흐름</h2>
+  <p>
+    <ol>
+      <li>Realm 생성</li>
+      <ul>
+        <li>보통 Non Secure환경(Hypervisor/EL2)에서 SMC를 통해 EL3를 거쳐 RMM에게 Realm 생성 요청</li>
+        <li>GPT에 해당 Granule을 Realm으로 표시</li>
+      </ul>
+      <li>Realm 실행</li>
+      <ul>
+        <li>Realm EL1(Guest OS) + Realm EL0(Application) 구동</li>
+        <li>Realm에 속하지 않는 월드(하이퍼바이저, Secure World)는 해당 메모리 접근 불가</li>
+      </ul>
+      <li>데이터 처리(Realm 내부 기밀 연산 수행)</li>
+      <li>Realm 종료(RMM -> GPT에서 해당 Granule 해제, Non-secure로 반환)</li>
+    </ol>
+    RMM에 접근하는 방법에는 아래 두 가지 방법이 있습니다.
+    <br>1. RMI(Realm Management Interface)로 Realm에 접근: Non-Secure의 EL2를 시작으로 EL3인 Secure Monitor를 거쳐서 Realm 상태의 RMM에 접근하는 방식으로
+    위에서 설명했던 Realm 생성 요청이 해당 방식을 통해 접근하게 됩니다.
+    <br>2. RSI(Realm Service Interface)로 Realm에 접근: Realm의 EL1에서 구동되는 커널에서 RMM에 서비스를 요청하는 경로입니다. 위에서는 Realm 종료를 알릴 때
+    RSI 방식을 통해 RMM에 접근하여 알리게 됩니다.
+  </p>
+
+  <hr>
+  <h2 id="section4">RME관련 시스템 레지스터</h2>
+  <p>
+    <strong>1. SCR_EL3</strong>
+    <br>
+    Armv8 까지는 SCR_EL3 시스템 레지스터는 NS 비트를 통해 Secure or Non-Secure 상태를 파악했습니다. 그러나 Armv9에서는
+    SCR_EL3 레지스터에서 확장한 NSE 비트가 추가되어 Realm 상태로 스위칭될 때 SCR_EL3.NSE가 1로 변경됩니다.
+    즉, SCR_EL3.NS과 SCR_EL3.NSE 모두 0일 경우 Secure World, NS만 1일 경우 Non-Secure World<br>
+    NS와 NSE 둘다 1일 경우 Realm 을 나타냅니다. EL3에 존재하는 Root를 실행할 때 또한 SCR_EL3의 NS와 NSE 모두 1입니다.
+    <br><br>
+    <strong>2. GPTBR_EL3</strong>
+    <br>
+    GPTBR의 경우 Granule Protection Table Base Register의 약자로 GPT 테이블의 베이스 주소를 설정하는 시스템 레지스터입니다.
+    GPTBR_EL3 레지스터는 최소 EL3에서 접근할 수 있어 EL3보다 낮은 권한(EL0~ EL2)에서 접근할 경우 익셉션을 유발합니다.
+    <br><br>
+    <strong>3. GPCCR_EL3</strong>
+    <br>
+    GPCCR의 경우 Granule Protection Check Control Register로 GPC와 관련된 세부 동작 방식을 설정하는 시스템 레지스터입니다.
+    <br>GPCCR_EL3 레지스터는 아래와 같은 구조를 가지고 있으며 모두 다 설명하기에는 출처를 살펴보시는게 더 좋을 것 같고 몇가지만 설명 드리도록 하겠습니다.
+    <figure>
+      <img src="/assets/img/Arm/GPCCR.png" height="250">
+      <figcaption>출처: https://developer.arm.com/documentation/ddi0601/2025-06/AArch64-Registers/GPCCR-EL3--Granule-Protection-Check-Control-Register--EL3-</figcaption>
+    </figure>
+    L0GPTSZ: Level 0 GPT 엔트리 크기를 설정하는 비트로 비트 값에 따라 각 엔트리를 1GB, 16GB, 64GB, 512GB 주소 영역을 지원하도록 합니다.<br>
+    GPC: GPC(Granule Protection Check)를 활성화 시키는 비트입니다. 0일 경우 비활성화 되며 1일 경우 모든 물리 주소에 접근할 때 GPC가 활성화 됩니다.
+    그리고 엑세스 방식은 GPCP 비트에 의해 결정됩니다.<br>
+    GPCP: Granule Protection Check Priority의 약자로 GPC 동작을 설정하는 비트입니다. 0일 경우 GPC와 일치하는 우선 순위와 함께 모든 GPC 폴트가 리포팅되며
+    1일 경우 2단계 변환 테이블에 대한 테이블 디스크립터를 fetch하지 못하면 유발되는 GPC 폴트를 리포팅하지 않습니다.
+    이 말은 즉, 0일 경우엔 모든 Fault가 리포팅되지만 1일 경우에는 보안 위반으로 보기에는 애매한 페이지 매핑 실패 Fault 같은 경우는 리포팅을 하지 않도록 하여
+    중대한 위반이라고 여겨지는 경우만 리포팅하라는 뜻입니다.
+  </p>
+
+  <hr>
+  <h2 id="section5">활용 사례</h2>
+  <p>
+    활용가능한 사례야 무궁무진 하겠지만 간략하게만 몇가지를 적어보자면 아래와 같은 상황들이 있지 않을까 싶습니다.
+    <ul>
+      <li>클라우드 환경에서 클라우드 사업자도 볼 수 없도록 안전한 VM 실행</li>
+      <li>금융/헬스케어 등 민감 데이터 처리 및 분석</li>
+      <li>AI/ML 모델과 데이터셋을 기밀 상태로 유지하며 추론 수행</li>
+      <li>같은 물리 서버에서 여러 고객에게 제공되는 Multi-tenant environment을 완벽하게 격리</li>
+    </ul>
+  </p>
+  <hr>
+  <h2 id="section6">마무리</h2>
+  <p>
+    오늘은 Armv9의 CCA(Confidential Compute Architecture)에 대해 정리를 해보았습니다.
+    사실 한번 Arm Architecture 관련해서 글을 남겨보고 싶긴 했는데 어느 주제를 잡아야할지 애매했는데
+    운이 좋게도?! 책장에 Arm 아키텍처 책을 보고 중간을 딱 펼쳤는데 분명 분량도 많지 않은데 CCA 페이지가 나와서
+    정리를 해보게 되었습니다. 사실 Armv9의 경우 타겟으로 잡고 분석을 해본적이 한번도 없는데 이렇게 글을 써도 되나 싶긴 하지만
+    오히려 글로 남길수록 기억에 더 잘 남지 않을까 싶어서 적어보게 되었고 혹시나 틀린 정보가 있다면 메일로 알려주시면 정말 감사하겠습니다.
+  </p>
