@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://benjamin0326.github.io/my-sitemap.xml
+Sitemap: https://benjamin0326.github.io/sitemap.xml
