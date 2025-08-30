@@ -1,0 +1,141 @@
+---
+layout: post
+title:  "CrewAI 기반 보안 프로젝트 소개: crew_security_project"
+date:   2025-08-30 18:00:00 +0900
+categories: [AI]
+tags: [Crew AI, AI, Agent Framework, LLM, Agent]
+---
+
+<h1>CrewAI 기반 보안 프로젝트 소개: crew_security_project</h1>
+<br>
+<div id="container-body" align="left">
+  <ul>
+    <li><a href="#section1">들어가며..</a></li>
+    <li><a href="#section2">CrewAI 소개</a></li>
+    <li><a href="#section3">프로젝트 소개: crew_security_project</a></li>
+    <li><a href="#section4">마무리</a></li>
+  </ul>
+  <h2 id="section1">들어가며..</h2>
+  <p>
+    요즘 Agent Framework를 많이 사용하는 추세입니다. 그 중 LangGraph, AutoGen, CrewAI가 제일 유명한 것 같습니다.
+    개인적으로 그 중에서 LangGraph와 AutoGen(Microsoft)은 CrewAI에 비해서 많이 들어보아서
+    이번에는 CrewAI를 사용하여 간단한 보안 취약점을 탐지하는 사이드 프로젝트를 진행하였습니다.
+    <br>
+    <a href="https://github.com/Benjamin0326/crew_security_project" target="_blank">사이드프로젝트 GitHub: crew_security_project</a>
+    <br><br>
+    다음엔 Agent Framework를 각각 소개하거나 서로 비교하는 시간도 가지면 좋을 것 같습니다.
+    <br>
+    ※ 혹시 틀린 정보가 있으면 메일로 알려주시면 감사하겠습니다!
+  </p>
+  <hr>
+  <h2 id="section2">CrewAI 소개</h2>
+  <p>
+    최근 멀티 에이전트 프레임워크 <strong><a href="https://github.com/joaomdmoura/crewAI" target="_blank">CrewAI</a></strong>가 다양한 분야에서 주목받고 있습니다.
+  </p>
+  <p>
+    CrewAI는 <strong>목표 지향적 Task 기반 Multi Agent Framework</strong>입니다.  
+    사용자는 에이전트(Agent)들을 정의하고, 각 Agent에 역할(Role)과 목표(Goal), 배경지식(Backstory), 그리고 처리할 Task를 부여합니다.
+  </p>
+  <p>
+    각 Agent는 자신의 역할과 목표에 따라 Task를 수행합니다.
+    Task는 자연어로 구성되며, Task마다 실행할 Agent를 지정합니다.
+    Agent 간 <strong>Context 공유</strong>가 가능하며, 필요 시 Agent에 <strong>Tool (도구)</strong>을 연결하여 
+    외부 API 호출, 파일 입출력, 코드 분석 등 복잡한 작업도 수행할 수 있습니다.
+  </p>
+  <p>
+    CrewAI는 각 Agent에 Python 기반 Tool을 <code>tools=[MyTool]</code> 형태로 직접 연결할 수 있습니다.<br>
+    이 구조는 마치 Agent에게 '손에 쥘 수 있는 도구'를 부여하는 MCP(Model Context Protocol) 구조처럼 동작합니다.
+  </p>
+
+  <p>
+    <strong>예시: GitHub 리포지토리 다운로드 Tool</strong>
+  </p>
+
+  <pre><code>class GitHubRepoDownloader(BaseTool):
+    name: str = "GitHubRepoDownloader"
+    description: str = "Downloads a GitHub repository from a given URL and saves it locally"
+
+    def _run(self, repo_url: str) -> str:
+        import os
+        import git
+
+        target_dir = "./fetched_repo"
+        if os.path.exists(target_dir):
+            import shutil
+            shutil.rmtree(target_dir)
+
+        git.Repo.clone_from(repo_url, target_dir)
+        return f"Repository downloaded to {target_dir}"
+</code></pre>
+
+  <p>
+    또한, <strong>CrewAI는 자체적으로도 유용한 Tool들을 제공합니다</strong>.<br>
+    예를 들어, 디렉터리 내 파일을 읽는 <code>DirectoryReadTool</code>, 특정 파일을 읽는 <code>FileReadTool</code> 등이 기본적으로 포함되어 있어 빠르게 활용할 수 있습니다.
+    <br>
+    자세한 Tools관련 설명은 <a href="https://docs.crewai.com/en/concepts/tools" target="_blank">CrewAI Tools</a> 문서에서 살펴볼 수 있습니다.
+  </p>
+  <p>
+    또한 CrewAI는 <code>OpenAI</code>, <code>Anthropic</code> 등 다양한 LLM 엔진을 지원하며,  
+    <strong><a href="https://ollama.com" target="_blank">Ollama</a></strong>와 같은 로컬 LLM API를 연결하여 완전한 로컬 기반 실행도 가능합니다.
+    저 같은 경우에는 노트북 사양이 그리 좋지 않아 gemma3 4b를 사용하였습니다.
+    이를 통해, Ollama의 <code>deepseek</code>, <code>gemma</code> 등 경량 모델을 활용하여  
+    보안 분석 Task를 수행하면서도 외부 요청 없이 프라이버시를 유지할 수 있습니다.
+  </p>
+  <hr>
+  <h2 id="section3">프로젝트 소개: crew_security_project</h2>
+  <p>
+    해당 프로젝트는 CrewAI를 기반으로 한 <strong>에이전트 기반 보안 분석기</strong>입니다.  
+    사용자가 원하는 GitHub 리포지토리를 자동으로 클론하여, LLM을 통한 Security 분석을 통해 잠재적 취약점을 탐지하고 마크다운 리포트를 생성합니다.
+    <br> 구성된 Agents는 아래와 같습니다.
+  </p>
+
+  <ul>
+    <li><strong>Code Fetcher</strong>: 지정된 GitHub 리포지토리를 클론하여 분석 준비</li>
+    <li><strong>Code Scanner</strong>: LLM 기반 reasoning으로 보안 취약점 탐지 -> 추후 기회가 되면 정적분석 CodeQL 등을 붙이고 싶음</li>
+    <li><strong>Vulnerability Summarizer</strong>: 위험도/심각도 기반 취약점 요약 및 분류</li>
+    <li><strong>Reporter</strong>: 마크다운 포맷으로 최종 보고서 작성 및 저장</li>
+  </ul>
+
+  <p>사용된 Task중 몇 가지 Task의 예시는 아래와 같습니다.</p>
+  <pre><code>code_fetching_task:
+  description: >
+    Use the GitHub Downloader tool to download the following repository: {github_url}
+  agent: code_fetcher
+
+reporting_task:
+  description: >
+    Compile all results into a Markdown report
+  agent: reporter
+  output_file: ./reports/final_report.md
+</code></pre>
+
+<p>다음으로 프로젝트 구조는 다음과 같습니다.</p>
+<pre><code>crew_security_project/
+├── fetched_repo/              # 클론된 GitHub 리포지토리
+├── reports/                   # 마크다운 보고서 출력 위치
+├── run.sh                     # 실행 스크립트
+├── README.md
+└── src/
+    └── crew_security_project/
+        ├── crew.py            # Crew 정의
+        ├── main.py            # 진입점
+        └── config
+        |   ├── tasks.yaml         # Task 정의
+        |   └── agents.yaml        # Agent 정의
+        └── tools/
+            └── custom_tool.py # GitHubRepoDownloader 툴 정의
+  </code></pre>
+  <hr>
+
+  <h2 id="section4">마무리</h2>
+  <p>
+    이번에 CrewAI를 통해 간단하게 프로젝트를 수행해보았습니다. 사실 점유율을 제가 자세힌 모르지만 LangGraph가 압도적일 것 같고 AutoGen 또한 Microsoft의 지원하에 
+    강세가 지속될 것 같습니다. 또한 AutoGen의 경우 LCNC(Low-Code/No-Code)를 지원하여 PoC등을 확인하거나 Prototype을 구현할 때 정말 강력한 도구가 될 것 같습니다.
+    반면 CrewAI는 컨셉이 마치 사람처럼 구성된 역할 기반 에이전트 팀 구성으로 각 Agent에게 "Role", "Goal", "Backstory"를 설정함으로써 
+    실제 회사나 팀프로젝트에서의 조직처럼 자연스러운 팀워크 설계가 가능하다는게 흥미로웠습니다.
+    <br>
+    사실 지금 각 Agents Framework들이 공식적으로 Framework들을 넘어선 A2A(Agents to Agents)를 지원하진 않는 것 같지만 이런 Agents 들을 구성할 때
+    충분히 Interface화 시키면 도구를 쥐어주는 식으로 충분히 Framework를 뛰어넘는 A2A가 가능하지 않을까 싶습니다.
+    <br>
+    추후에는 해당 프로젝트에 정적분석(e.g. CodeQL)이나 동적분석(e.g. Fuzzing)등을 붙여 더 정확도를 높이고 자동패치제안 기능까지 확장하면 좋을 것 같습니다.
+  </p>
