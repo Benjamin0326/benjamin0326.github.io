@@ -96,17 +96,77 @@ tags: [Crew AI, AI, Agent Framework, LLM, Agent]
     <li><strong>Reporter</strong>: 마크다운 포맷으로 최종 보고서 작성 및 저장</li>
   </ul>
 
-  <p>사용된 Task중 몇 가지 Task의 예시는 아래와 같습니다.</p>
+  <p>
+    CrewAI에서 agents는 config파일에서 아래와 같이 작성하하게 됩니다.
+  </p>
+  <pre><code>code_fetcher:
+  role: >
+    Code Fetcher
+  goal: >
+    Download the target GitHub repository for analysis
+  backstory: >
+    You are responsible for retrieving codebases from GitHub so other agents can analyze them.
+
+code_scanner:
+  role: >
+    Static Code Vulnerability Scanner
+  goal: >
+    Analyze the fetched source code and find potential security vulnerabilities
+  backstory: >
+    You're an expert in secure coding and static code analysis. You're able to detect risky patterns, deprecated functions, or any logic that might lead to vulnerabilities.
+
+vuln_summarizer:
+  role: >
+    Vulnerability Risk Assessor
+  goal: >
+    Summarize and categorize the vulnerabilities based on severity, impact, and exploitability.
+  backstory: >
+    You’re a cybersecurity risk analyst with deep understanding of CVSS and threat modeling. Your expertise lies in triaging and evaluating discovered vulnerabilities for clarity and prioritization.
+
+reporter:
+  role: >
+    Security Incident Reporting Analyst
+  goal: >
+    Compile a clear and detailed Markdown report of all identified vulnerabilities and assessments.
+  backstory: >
+    You're a professional report writer in the cybersecurity domain. You're known for transforming raw security findings into professional-grade reports that stakeholders can use for patching and documentation.
+  </code></pre>
+
+  <p>사용된 Task의 예시는 아래와 같습니다.</p>
   <pre><code>code_fetching_task:
   description: >
-    Use the GitHub Downloader tool to download the following repository: {github_url}
+    Use the GitHub Repository Downloader tool to download the following repository:
+    {github_url}
+
+    Make sure it is cloned into a local folder for further analysis.
+  expected_output: >
+    The repository should be available in the './fetched_repo' folder.
   agent: code_fetcher
+
+code_scanning_task:
+  description: >
+    Perform a static code analysis to identify potential security vulnerabilities.
+    Use both known patterns (e.g., insecure functions, hardcoded secrets) and LLM-based reasoning.
+  expected_output: >
+    A detailed list of discovered security issues including file names, line numbers, issue types, and code snippets.
+  agent: code_scanner
+
+vulnerability_summarizing_task:
+  description: >
+    Categorize the discovered security vulnerabilities based on severity, exploitability, and potential impact.
+    Prioritize findings using CVSS-like criteria or other risk evaluation schemes.
+  expected_output: >
+    A list of vulnerabilities with summaries, ranked by risk level, including reasoning for each ranking.
+  agent: vuln_summarizer
 
 reporting_task:
   description: >
-    Compile all results into a Markdown report
+    Compile all vulnerability findings and assessments into a professional Markdown report.
+    The report should include a summary section, followed by detailed sections for each vulnerability.
+  expected_output: >
+    A well-formatted Markdown report, suitable for sharing with developers or security teams.
   agent: reporter
-  output_file: ./reports/final_report.md
+  output_file: "./reports/final_report.md"
 </code></pre>
 
 <p>다음으로 프로젝트 구조는 다음과 같습니다.</p>
