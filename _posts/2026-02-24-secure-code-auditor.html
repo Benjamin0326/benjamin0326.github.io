@@ -1,0 +1,139 @@
+---
+layout: post
+title:  "로컬 LLM과 MCP를 활용한 보안 취약점 분석 에이전트 구현기"
+date:   2026-02-24 21:00:00 +0900
+categories: [AI, Security]
+tags: [LLM, MCP, Agent, Security, Python]
+---
+
+<h1>로컬 LLM과 MCP를 활용한 보안 에이전트 구현기</h1>
+<br>
+<div id="container-body" align="left">
+  <ul>
+    <li><a href="#section1">들어가며</a></li>
+    <li><a href="#section2">1. 정규표현식의 한계와 Tree-sitter 도입</a></li>
+    <li><a href="#section3">2. 로컬 LLM의 툴 호출 문제 해결</a></li>
+    <li><a href="#section4">3. 스스로 생각하는 에이전트 루프 구현</a></li>
+    <li><a href="#section5">4. 실행 결과: 데이터 흐름 추적</a></li>
+    <li><a href="#section6">마무리</a></li>
+  </ul>
+
+  <h2 id="section1">들어가며</h2>
+  <p><strong>프로젝트 링크: </strong>
+  <a href="https://github.com/Benjamin0326/secure-code-auditor" target="_blank">Local MCP Security Auditor (GitHub)</a></p>
+  <p>
+    요즘 AI 씬에서 가장 뜨거운 키워드는 단연 에이전트(Agent)와 MCP(Model Context Protocol)인 것 같습니다. 프롬프트를 주면 단순히 텍스트를 생성하는 것을 넘어, 스스로 도구(Tool)를 사용해 필요한 정보를 찾고 작업을 수행하는 모습이 꽤 인상적이었습니다.
+  </p>
+  <p>
+    하지만 프레임워크가 다 알아서 해주는 마법 이면의 "진짜 동작 원리"가 궁금해졌습니다. LLM은 도대체 어떻게 도구를 호출하고, 그 결과를 바탕으로 다음 생각을 이어나갈까요?
+  </p>
+  
+  <p>
+    이 궁금증을 해결하기 위해 로컬 환경(Ollama, <code>qwen2.5-coder:7b</code>, 노트북이라 토큰 작은걸로 밖에 ㅠㅠ)에서 직접 도구를 쥐여주고 C++ 소스 코드의 취약점을 분석하게 하는 보안 에이전트를 토이 프로젝트로 구현해 보았습니다.
+  </p>
+
+  <hr>
+  <h2 id="section2">1. 정규표현식의 한계와 Tree-sitter 도입</h2>
+  <p>
+    처음에는 단순히 정규표현식을 사용해 C++ 코드에서 함수를 추출하려고 했습니다. 하지만 주석 처리된 함수, 복잡한 포맷팅, 매크로 등이 섞여 있는 실제 코드에서는 정규표현식이 너무 쉽게 무너졌습니다.
+  </p>
+  <p>
+    그래서 업계 표준에 가까운 파서인 <code>tree-sitter</code>를 도입했습니다. 코드를 추상 구문 트리(AST)로 변환하여 파싱하니, 포맷이나 주석에 구애받지 않고 함수 정의 부분만 깔끔하게 추출할 수 있었습니다. 이를 통해 에이전트에게 명확한 코드 컨텍스트를 제공하는 <code>list_functions</code>와 <code>read_function</code> 도구를 완성했습니다.
+  </p>
+  
+
+<pre><code class="language-python"># tree-sitter를 활용한 C++ 파싱 예시 (mcp_server.py 중)
+def _find_identifier(self, node, source_bytes):
+    if node.type == 'identifier':
+        return source_bytes[node.start_byte:node.end_byte].decode('utf-8')
+    
+    if node.type == 'field_identifier':
+        return source_bytes[node.start_byte:node.end_byte].decode('utf-8')
+    
+    next_node = node.child_by_field_name('declarator')
+    if next_node:
+        return self._find_identifier(next_node, source_bytes)
+
+    for child in node.children:
+        res = self._find_identifier(child, source_bytes)
+        if res: return res        
+    
+    return None
+</code></pre>
+
+  <hr>
+  <h2 id="section3">2. 로컬 LLM의 툴 호출 문제 해결</h2>
+  <p>
+    개발 과정에서 가장 크게 부딪힌 벽은 로컬 LLM의 툴 호출 포맷팅 문제였습니다. 표준 API의 <code>tool_calls</code> 필드에 예쁘게 담아주길 기대했지만, 모델이 종종 일반 텍스트 응답 안에 원시 JSON 형태로 도구 사용을 요청하는 경우가 발생했습니다.
+  </p>
+  <p>
+    이를 해결하기 위해 텍스트 응답이 중괄호로 시작하면 직접 JSON으로 파싱하고, 사전에 정의해 둔 화이트리스트와 일치하는지 검증하는 안전한 커스텀 파싱 로직을 클라이언트 쪽에 추가했습니다.
+  </p>
+
+<pre><code class="language-python"># 일반 텍스트에 포함된 JSON 도구 호출을 잡아내는 파서 (client.py 중)
+elif content.strip().startswith('{'):
+    try:
+        parsed = json.loads(content)
+        if isinstance(parsed, dict) and "name" in parsed:
+            tool_name = parsed["name"]
+            valid_tools = ["list_functions", "read_function"]
+
+            if tool_name in valid_tools:
+                final_tool_calls.append({
+                    "function": {
+                        "name": parsed["name"],
+                        "arguments": parsed.get("arguments", {})
+                    }
+                })
+    except:
+        pass
+</code></pre>
+
+  <hr>
+  <h2 id="section4">3. 스스로 생각하는 에이전트 루프 구현</h2>
+  <p>
+    에이전트의 핵심은 결과를 보고 다음 행동을 결정하는 것입니다. 한 번 질문하고 끝나는 단발성 호출이 아니라, <code>while</code> 루프를 이용해 LLM이 도구를 사용하면 그 결과를 대화 기록에 추가하고 다시 LLM에게 던져주는 구조를 만들었습니다.
+  </p>
+  <p>
+    이때 에이전트가 길을 잃고 끝없는 굴레에 빠지는 것을 막기 위해 <code>MAX_LOOPS</code>라는 제어 장치도 잊지 않고 추가했습니다. 이 추론 루프가 바로 에이전트 시스템의 뼈대 역할을 합니다.
+  </p>
+
+  <hr>
+  <h2 id="section5">4. 실행 결과: 데이터 흐름 추적</h2>
+  <p>
+    의도적으로 Heap Buffer Overflow 취약점을 포함시킨 C++ 프로젝트를 타겟으로 분석을 요청해 보았습니다. 취약점은 단일 함수에 명시적으로 드러나지 않고, <code>main</code>에서 <code>process_packet</code>으로, 다시 <code>store_data</code>로 인자가 전달되는 호출 스택 깊은 곳에 숨겨두었습니다.
+  </p>
+  
+  <p>
+    실행 결과, 에이전트는 먼저 함수 목록을 스캔하고, 진입점인 <code>main</code> 함수를 읽은 뒤 인자의 흐름을 쫓아 <code>store_data</code>까지 스스로 추적해 들어갔습니다.
+  </p>
+
+<pre><code class="language-text">--- [Loop 1] Thinking... ---
+🤖 AI Thought: I need to run tools: ['list_functions']
+  └─ 🛠️ Executing: list_functions with {}
+
+--- [Loop 2] Thinking... ---
+🤖 AI Thought: I need to run tools: ['read_function']
+  └─ 🛠️ Executing: read_function with {'function_name': 'main'}
+
+--- [Loop 3] Thinking... ---
+🤖 AI Thought: I need to run tools: ['read_function']
+  └─ 🛠️ Executing: read_function with {'function_name': 'process_packet'}
+
+--- [Loop 4] Thinking... ---
+🤖 AI Thought: I need to run tools: ['read_function']
+  └─ 🛠️ Executing: read_function with {'function_name': 'store_data'}
+
+--- [Loop 5] Thinking... ---
+🤖 AI Answer: The project is vulnerable to a heap overflow in the `store_data` function. The `memcpy` call copies data from `src` into a fixed-size buffer of 64 bytes without checking if `len` exceeds this size, leading to potential memory corruption.
+</code></pre>
+
+  <hr>
+  <h2 id="section6">마무리</h2>
+  <p>
+    이번 토이 프로젝트를 통해 에이전트라는 것이 결국 "LLM의 추론 + 도구 실행 + 결과 피드백"의 무한 루프라는 것을 코드로 직접 부딪혀보며 체감할 수 있었습니다.
+  </p>
+  <p>
+    현재는 파이썬 모듈을 직접 import하여 MCP의 동작을 흉내 내는 수준이지만, 다음번에는 표준 입출력이나 HTTP/SSE를 사용하는 완전한 MCP 프로토콜 스펙을 적용하여 다른 클라이언트에서도 범용적으로 붙일 수 있는 진정한 의미의 도구 서버를 만들어보고 싶습니다.
+  </p>
+</div>
