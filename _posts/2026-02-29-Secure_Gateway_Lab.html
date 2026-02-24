@@ -1,0 +1,171 @@
+---
+layout: post
+title:  "웹 보안 기초: Rust로 구현한 로그인 계층 방어 시스템 구현"
+date:   2026-02-22 23:36:00 +0900
+categories: [Security]
+tags: [Rust, Security, Web, Layered Defense, SideProject]
+---
+
+<h1>[Rust] 웹 보안 기초: 로그인 계층 방어 시스템 구현</h1>
+<br>
+<div id="container-body" align="left">
+  <ul>
+    <li><a href="#section1">들어가며..</a></li>
+    <li><a href="#section2">1. 방어의 시작: 서버가 죽지 않게 보호하기 (Phase 1 ~ 4)</a></li>
+    <li><a href="#section3">2. 공격 패턴 끊어내기: 속도와 조합의 싸움 (Phase 5 ~ 7)</a></li>
+    <li><a href="#section4">3. 기계와의 전쟁, 그리고 유저 경험 (Phase 8 ~ 9)</a></li>
+    <li><a href="#section5">4. 궁극의 방어: 공격자의 시간을 뺏어라 (Phase 10)</a></li>
+    <li><a href="#section6">마무리</a></li>
+  </ul>
+
+  <h2 id="section1">들어가며..</h2>
+  <p><strong>프로젝트 링크: </strong>
+  <a href="https://github.com/Benjamin0326/secure_gateway_lab" target="_blank">Layered Login Defense Server (GitHub)</a></p>
+  <p>
+    최근 Rust의 HTTP 라이브러리인 <code>hyper</code>를 처음 접하게 되었습니다. 단순히 API 서버를 띄워보는 것을 넘어, 평소 배워야지 다짐만 하고 미뤄두었던 <strong>웹 보안 개념을 코드로 직접 빚어보며 뼈대를 잡아보고 싶었습니다.</strong>
+  </p>
+  <p>
+    그중에서도 '로그인'은 웹의 가장 기본적이면서도, 해커들이 가장 집요하게 두드리는 문(Door)입니다. 처음에는 "IP당 요청 횟수만 막으면 되는 거 아닌가?"라고 단순하게 생각했습니다. 하지만 트래픽을 분산하는 봇(Bot)이나 크리덴셜 스터핑(Credential Stuffing) 같은 공격을 생각해보니, <strong>단일 방어선으로는 구멍이 뚫릴 수밖에 없겠구나</strong> 하는 생각이 들었습니다.
+  </p>
+  
+  <p>
+    그래서 마치 TDD(테스트 주도 개발)를 하듯, 무식하게 찔러보는 <code>Client</code>와 이를 막아내는 <code>Server</code>를 만들고, 뚫리면 새로운 방어 로직을 덧대는 식으로 <strong>10단계의 계층 방어(Layered Defense)</strong>를 토이 프로젝트로 구현해 보았습니다. 이 글은 그 삽질과 배움의 기록입니다.
+    <br>
+    ※ 저도 웹 보안 로직을 직접 구현해 보는 것은 처음이라, 혹시 틀린 정보가 있거나 더 나은 방식이 있다면 언제든 이메일로 피드백 주시면 감사하겠습니다!
+  </p>
+
+  <hr>
+  <h2 id="section2">1. 방어의 시작: 서버가 죽지 않게 보호하기 (Phase 1 ~ 4)</h2>
+  <p>
+    가장 먼저 고려한 점은 "로그인 공격을 막기 전에 서버 자체가 뻗으면 안 된다"는 것이었습니다.
+  </p>
+
+  <h4>기본 라우팅과 에러 구조화 (Phase 1)</h4>
+  <p>
+    먼저 서버가 정상적으로 HTTP 규약에 맞게 응답하도록 <code>/health</code> 같은 엔드포인트를 제공하고, 없는 경로는 <code>404 Not Found</code>를 내리도록 했습니다. 특히 모든 에러를 JSON 형태(<code>error_code</code>, <code>message</code>)로 표준화했는데, 방어 로직이 정확히 동작하는지 식별하려면 명확한 에러 코드가 필수라고 생각했기 때문입니다.
+  </p>
+
+  <pre><code class="language-rust">#[derive(Serialize)]
+struct ErrorResponse { status: u16, error_code: &'static str, message: &'static str }
+
+fn json_error(status: StatusCode, error_code: &'static str, message: &'static str) -> Response&lt;Body&gt; {
+    let body = ErrorResponse { status: status.as_u16(), error_code, message };
+    let json = serde_json::to_string(&body).unwrap_or_else(|_| "{}".to_string());
+    let mut res = Response::new(Body::from(json));
+    *res.status_mut() = status;
+    res.headers_mut().insert(hyper::header::CONTENT_TYPE, hyper::header::HeaderValue::from_static("application/json"));
+    res
+}
+  </code></pre>
+
+  <h4>헤더 검증 (Phase 2): 입구에서 걸러내기</h4>
+  <p>
+    그다음으로는 프로토콜이나 클라이언트의 이상 행동을 초장에 차단하고자 했습니다. <code>Host</code> 헤더가 없거나, <code>User-Agent</code>가 없거나 너무 긴 경우(예: 200자 이상) 에러를 반환하게 했습니다. 실무(특히 프록시 환경)에서는 이런 비정상적인 헤더를 악용한 공격(Abuse) 가능성이 꽤 높다고 들었기 때문입니다.
+  </p>
+
+  <h4>입력 형식 검증 (Phase 3): 파싱 에러 방어</h4>
+  <p>
+    서버가 처리할 수 있는 형태만 받기 위해 <code>Content-Type</code>이 <code>application/json</code>인 경우만 허용했습니다. 입력이 자유로우면 파싱 오류나 예외 처리가 발생할 수 있고, 그 자체가 공격면(Attack Surface)이 될 수 있으므로 로그인 로직을 보호하기 전에 입력 형태부터 엄격하게 제한하도록 하였습니다.
+  </p>
+
+  <h4>대용량 요청 방어 (Phase 4): Body Size Limit</h4>
+  <p>
+    요즘 AI의 활용으로 인해 DoS 공격 비율이 늘었다고 합니다. 로그인 엔드포인트에 10MB짜리 거대한 JSON을 보내는 등의 공격을 막기 위해 데이터를 청크(chunk) 단위로 읽으면서 누적 사이즈를 체크하여, 제한을 넘기면 바로 <code>413 Payload Too Large</code>를 뱉고 연결을 끊도록 구현했습니다.
+  </p>
+
+  <hr>
+  <h2 id="section3">2. 공격 패턴 끊어내기: 속도와 조합의 싸움 (Phase 5 ~ 7)</h2>
+  <p>
+    기본 공사가 끝난 뒤, 본격적인 무차별 대입(Brute-force) 방어에 대해 고민해보았습니다.
+  </p>
+  <ul>
+    <li><strong>IP Rate Limit (Phase 5):</strong> 가장 바깥쪽 방어선입니다. 1분에 30회 이상 요청하는 IP는 <code>429 Too Many Requests</code>를 뱉게 했습니다. 하지만 공격자가 프록시로 IP를 분산시키면 우회될 수 있다는 한계가 보였습니다.</li>
+    <li><strong>Account Lockout (Phase 6):</strong> 그래서 계정 단위로 방어선을 추가해 보았습니다. 특정 계정에 5번 실패하면 15분간 잠가버렸죠. 하지만 이 방식은 공격자가 악의적으로 다른 사용자의 계정을 잠가버리는 DoS 공격으로 악용될 위험이 있을 것 같았습니다.</li>
+    <li><strong>IP + Account Combo Limit (Phase 7):</strong> 위 두 방식의 단점을 보완하기 위해 <strong>'특정 IP가 특정 계정을 찌르는 패턴'</strong>을 복합적으로 추적해 보았습니다.</li>
+  </ul>
+  <p>
+    이처럼 조합 룰(예: <code>IP:User</code> 키)을 적용해 보니, NAT 환경(공유망)의 억울한 피해자도 줄이고, 정교한 공격 패턴만 핀셋으로 잡아낼 수 있을 것이라 기대했습니다.
+  </p>
+
+  <pre><code class="language-rust">// IP 단독 제어와 IP+계정 조합 제어를 함께 처리하는 로직
+fn check_rate_limit(&self, is_combo: bool, key: &str) -> Result&lt;(), ()&gt; {
+    let mut map = if is_combo { self.combo_rate_limit.lock().unwrap() } else { self.ip_rate_limit.lock().unwrap() };
+    let (window, max) = if is_combo { (LOGIN_COMBO_WINDOW, LOGIN_COMBO_MAX_ATTEMPTS) } else { (LOGIN_WINDOW, LOGIN_MAX_ATTEMPTS) };
+
+    let now = Instant::now();
+    let entry = map.entry(key.to_string()).or_insert(RateLimitEntry { count: 0, window_start: now });
+
+    if now.duration_since(entry.window_start) > window {
+        entry.count = 0;
+        entry.window_start = now;
+    }
+    entry.count += 1;
+    if entry.count > max { return Err(()); }
+    Ok(())
+}
+  </code></pre>
+
+  <hr>
+  <h2 id="section4">3. 기계와의 전쟁, 그리고 유저 경험 (Phase 8 ~ 9)</h2>
+  <p>
+    조합 방어(Phase 7)에 걸렸다고 무조건 차단하면 정상적인 사용자도 비밀번호를 깜빡했을 때 큰 불편을 겪게 됩니다.
+  </p>
+
+  <h4>CAPTCHA Gate (Phase 8) & Recovery (Phase 9)</h4>
+  <p>
+    의심스러운 패턴이 감지되면 완전히 차단하는 대신 <code>CAPTCHA_REQUIRED</code> 상태를 내리도록 했습니다. 인간임을 증명하게 하여 봇의 자동화 스크립트를 고장 낼 수 있을 거라 생각했습니다. (하지만 요즘 AI는 간단한 CAPTCHA는 그냥 뚫겠죠..? ㅠㅠ) 
+  </p>
+  <p>
+    그리고 생각한 부분은 <strong>회복(Recovery)</strong>입니다. 우여곡절 끝에 로그인을 성공했다면 꼬리표처럼 붙어있던 실패 카운트와 CAPTCHA 요구 상태를 즉시 초기화하여 정상 유저의 경험을 깔끔하게 회복시켜 주도록 구현했습니다.
+  </p>
+
+  <pre><code class="language-rust">// 로그인 성공 시 모든 제재 상태를 깔끔하게 초기화
+fn clear_login_state(&self, ip: &str, user_key: &str) {
+    let combo_key = format!("{}:{}:/login", ip, user_key);
+    self.accounts.lock().unwrap().remove(user_key);
+    self.combo_rate_limit.lock().unwrap().remove(&combo_key);
+    self.captchas.lock().unwrap().remove(&combo_key);
+}
+  </code></pre>
+
+  <hr>
+  <h2 id="section5">4. 궁극의 방어: 공격자의 시간을 뺏어라 (Phase 10)</h2>
+  <p>
+    그리고 무분별한 공격을 막고자 추가한 부분인 <strong>Exponential Backoff(지수적 지연)</strong>입니다.
+  </p>
+  <p>
+    단순히 차단(Deny)만 하면 공격자는 즉시 다른 프록시나 계정으로 갈아타서 다시 때릴 것입니다. 하지만 실패할 때마다 서버의 응답 시간을 기하급수적으로 느리게 만들면 어떨까요?
+  </p>
+  
+  <p>
+    여기에 <strong>Jitter(미세한 랜덤 지연 시간)</strong>까지 섞어주니, 공격자 입장에서는 타이밍을 맞추기도 어렵고 공격 비용(시간)이 기하급수적으로 증가하게 됩니다. 단순히 문을 걸어 잠그는 것을 넘어, "때리는 게 손해"인 상황을 만드는 셈이죠.
+  </p>
+
+  <pre><code class="language-rust">// 실패 횟수에 비례해 응답 지연 시간을 계산하고, Jitter를 섞는 로직
+fn calc_backoff_delay(ip: &str, user_key: &str, fail_count: u32) -> Duration {
+    let exp = fail_count.saturating_sub(1);
+    let mult = 1u64.checked_shl(exp).unwrap_or(u64::MAX);
+    let mut ms = BACKOFF_BASE_MS.saturating_mul(mult);
+    if ms > BACKOFF_MAX_MS { ms = BACKOFF_MAX_MS; }
+    
+    // IP와 User 기반으로 간단한 해시를 만들어 의사 난수(Jitter) 생성
+    let mut h: u64 = 1469598103934665603;
+    for b in ip.bytes().chain(user_key.bytes()) { h ^= b as u64; h = h.wrapping_mul(1099511628211); }
+    h ^= fail_count as u64;
+    
+    Duration::from_millis(ms + (h % (BACKOFF_JITTER_MS + 1)))
+}
+  </code></pre>
+
+  <hr>
+  <h2 id="section6">마무리</h2>
+  <p>
+    이번 토이 프로젝트를 진행하며 배운 가장 큰 교훈은 <strong>"완벽한 단일 방어 로직은 없다"</strong>는 것이었습니다. 
+  </p>
+  <p>
+    IP 제한을 뚫으면 계정 락이 버티고 있고, 그걸 우회하면 캡차가 뜨고, 캡차를 풀려고 덤비면 응답이 끝없이 느려지는 <strong>다층적 구조(Layered Defense)</strong>만이 정답에 가깝다는 것을 코드로 직접 부딪혀보며 체감할 수 있었습니다.
+  </p>
+  <p>
+    Rust의 <code>hyper</code> 모듈을 익혀보려 시작한 작은 코딩이었지만, 웹 보안의 기초적인 철학을 얕게나마 맛볼 수 있었던 즐거운 경험이었습니다. 앞으로 다른 프로젝트에서 인증 로직을 다룰 때, 이번에 고민했던 방어선들이 큰 도움이 될 것 같습니다!
+  </p>
+</div>
