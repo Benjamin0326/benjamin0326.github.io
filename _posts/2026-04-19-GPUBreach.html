@@ -1,0 +1,343 @@
+---
+layout: post
+title:  "GPUBreach: GPU Rowhammer가 Root Shell까지 이어질 수 있을까?"
+date:   2026-04-19 13:52:17 +0900
+categories: [Security]
+tags: [GPU, Rowhammer, GPUBreach, GPUHammer, GDDR6, NVIDIA, Security]
+---
+
+<h1>GPUBreach: GPU Rowhammer의 다음 단계</h1>
+<br>
+<div id="container-body" align="left">
+  <ul>
+    <li><a href="#section1">들어가며..</a></li>
+    <li><a href="#section2">GPUHammer에서 어디까지 갔었나?</a></li>
+    <li><a href="#section3">GPUBreach의 핵심 아이디어</a></li>
+    <ul>
+      <li><a href="#section3-1">1. GPU page table을 노린다</a></li>
+      <li><a href="#section3-2">2. 원하는 위치에 page table을 배치한다</a></li>
+      <li><a href="#section3-3">3. GPU 권한 상승에서 CPU 권한 상승으로 이어간다</a></li>
+    </ul>
+    <li><a href="#section4">무엇이 실제로 가능한가?</a></li>
+    <li><a href="#section5">동시기 연구와 비교하면</a></li>
+    <li><a href="#section6">마무리</a></li>
+  </ul>
+
+  <h2 id="section1">들어가며..</h2>
+  <p>
+    얼마 전에 정리했던 <a href="/security/2025/10/18/GPUHammer.html" target="_blank"><strong>GPUHammer 글</strong></a>에서는
+    GDDR6 메모리에서도 Rowhammer가 가능하고, 실제 비트 플립이 발생할 수 있다는 점이 핵심이었습니다.
+    다만 그 당시에는 주로 ML 모델 weight를 망가뜨리거나 결과를 왜곡하는 식의
+    <strong>데이터 무결성 훼손</strong>이 중심이었습니다.
+  </p>
+  <p>
+    그런데 이번 <a href="https://gpubreach.ca/" target="_blank"><strong>GPUBreach</strong></a>는 한 단계 더 나아갑니다.
+    단순히 bit flip이 난다 수준이 아니라, <strong>GPU page table을 의도적으로 오염</strong>시켜
+    임의 GPU 메모리 read/write를 얻고, 그 다음에는 <strong>NVIDIA 드라이버의 메모리 안전성 버그와 연결하여
+    CPU 측 root shell까지 이어질 수 있다</strong>는 것을 보여줍니다.
+    개인적으로는 "GPU도 이제 진짜 privilege escalation의 무대가 되는구나" 라는 점에서 꽤 인상적이었습니다.
+  </p>
+  <p>
+    참고로 이 내용은 IEEE S&amp;P 2026에 발표 예정인 연구이며, 자세한 내용은 공식 페이지의
+    <a href="https://gpubreach.ca/" target="_blank">요약</a>를 기준으로 정리했습니다.
+  </p>
+  <p>
+    그리고 저도 공개된 자료를 바탕으로 이해한 내용을 정리한 것이기 때문에,
+    혹시 잘못 이해한 부분이나 보완하면 좋을 내용이 있다면 메일로 알려주시면 감사하겠습니다.
+  </p>
+  <hr>
+
+  <h2 id="section2">GPUHammer에서 어디까지 갔었나?</h2>
+  <p>
+    먼저 이전 연구와의 차이를 짚고 가는게 좋을 것 같습니다.
+    제가 예전에 정리했던 GPUHammer의 핵심은 아래와 같이 볼 수 있습니다.
+  </p>
+  <ul>
+    <li>GPU의 GDDR6에서도 실제 Rowhammer bit flip이 발생할 수 있음</li>
+    <li>GPU 내부 주소 매핑과 타이밍을 역추적해 hammering이 가능함</li>
+    <li>대표적으로 ML 모델 weight를 손상시켜 정확도를 크게 떨어뜨릴 수 있음</li>
+  </ul>
+  <p>
+    즉, GPUHammer는 "GPU 메모리도 안전하지 않다"는 것을 보여준 연구였습니다.
+    하지만 여전히 질문이 하나 남아 있었습니다.
+    <br>
+    <strong>그래서 이걸로 실제 권한 상승까지 가능한가?</strong>
+  </p>
+  <p>
+    GPUBreach는 바로 그 질문에 대한 답에 가깝습니다.
+    단순한 weight corruption이 아니라, <strong>권한을 결정하는 구조물인 page table entry(PTE)</strong>를 노리기 시작했다는 점이 핵심입니다.
+    이 지점부터는 "AI 모델 정확도 저하"가 아니라 "격리 우회, 임의 메모리 접근, 시스템 장악" 이야기로 넘어가게 됩니다.
+  </p>
+  <hr>
+
+  <h2 id="section3">GPUBreach의 핵심 아이디어</h2>
+
+  <h3 id="section3-1">1. GPU page table을 노린다</h3>
+  <p>
+    CPU Rowhammer 계열 연구에서 page table을 뒤집어 권한 상승으로 이어가는 흐름은 익숙한 편입니다.
+    GPUBreach는 이 아이디어를 GPU 쪽으로 가져옵니다.
+    <br>
+    GPU 메모리 안에 존재하는 page table이 Rowhammer bit flip의 표적이 되면,
+    공격자가 자신이 접근할 수 없는 메모리 영역을 가리키도록 PTE를 오염시킬 수 있습니다.
+  </p>
+  <p>
+    연구팀 설명에 따르면 이렇게 오염된 PTE를 이용해
+    <strong>임의 GPU 메모리 read/write</strong>를 얻을 수 있고,
+    이 단계만으로도 cross-process 데이터 접근 같은 공격이 가능해집니다.
+    결국 GPUHammer가 보여준 "bit flip 가능성"이 GPUBreach에서는
+    <strong>권한 구조를 깨는 primitive</strong>로 발전한 셈입니다.
+  </p>
+
+  <h3 id="section3-2">2. 원하는 위치에 page table을 배치한다</h3>
+  <p>
+    물론 이론만으로는 공격이 성립하지 않습니다.
+    실제로는 "bit flip이 잘 나는 위치" 근처에 "내가 노리는 page table"이 와야 합니다.
+    이게 상당히 어려운 문제인데, GPUBreach는 이 부분을 메모리 배치 조작과 타이밍 관찰로 해결합니다.
+  </p>
+  <p>
+    이 부분은 공개 요약만 읽으면 조금 추상적으로 느껴질 수 있는데, 흐름을 조금 더 풀어보면 아래와 같습니다.
+    핵심은 <strong>"PTE를 bit flip이 잘 나는 row 옆에 두기 위해, page table이 어디서 할당되는지 먼저 알아내고 그 할당 위치를 유도한다"</strong> 입니다.
+  </p>
+  <p>
+    공식 페이지 설명에 따르면 연구팀은 먼저 드라이버를 분석해서
+    <strong>GPU page table이 연속된 2MB짜리 page-table region(PT region)</strong> 안에 배치된다는 점을 파악했습니다.
+    중요한 부분은 여기서 끝이 아니라, <strong>초기 PT region이 다 차기 전까지는 page table이 비교적 전용 공간처럼 관리되지만,
+    그 공간이 가득 차면 이후 PT region은 user data와 같은 메모리 풀에서 나오기 시작한다</strong>는 점입니다.
+  </p>
+  <p>
+    즉 처음에는 공격자가 아무리 user allocation을 많이 해도 "내가 원하는 취약 row 옆"에 바로 page table이 오지 않을 수 있습니다.
+    하지만 page table 생성이 계속 일어나서 초기 PT region이 소진되면,
+    그 다음부터는 user allocation과 더 가까운 풀에서 새 PT region이 할당될 수 있으므로
+    <strong>Rowhammer에 유리한 row-sandwich 배치</strong>를 만들 여지가 생깁니다.
+  </p>
+  <p>
+    여기서 연구팀이 사용한 것이 <code>UVM(Unified Virtual Memory)</code> allocation primitive입니다.
+    UVM을 이용하면 CPU/GPU 사이에서 관리되는 페이지를 지속적으로 만들고 매핑하면서
+    <strong>PTE가 많이 필요하도록</strong> 만들 수 있습니다.
+    공식 설명에는 64KB, 4KB frame을 얻는 방식으로 PT region을 조밀하게 채운다고 나와 있는데,
+    쉽게 말하면 "page table이 많이 생기게끔" 유도하여 초기 PT region을 빠르게 소모하는 단계라고 이해하면 됩니다.
+  </p>
+  <p>
+    GPU 메모리가 거의 찬 상태에서 UVM allocation을 계속하면,
+    일부 페이지가 CPU memory 쪽으로 <strong>eviction / migration</strong> 되면서 할당 지연 시간이 확 늘어나는 구간이 생깁니다.
+    연구팀은 이 <strong>allocation latency spike</strong>를 side channel처럼 사용해
+    "아, 지금 새 PT region이 생겼거나 GPU 메모리 상태가 바뀌었구나"를 감지한 것으로 보입니다.
+  </p>
+  <p>
+    그리고 이 타이밍에 맞춰 일부 영역을 해제(free)하면, 드라이버가 다음 PT region을 다시 할당할 때
+    공격자가 비워둔 hole을 재사용할 가능성이 생깁니다.
+    결국 흐름은
+    <strong>취약한 bit-flip 위치를 먼저 알아냄 → user/UVM allocation으로 PT를 계속 생성시킴 → timing spike로 상태 변화를 감지함 → 원하는 위치에 hole을 만든 뒤 다음 PT region이 그쪽에 오게 유도함</strong>
+    으로 볼 수 있습니다.
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>단계</th>
+        <th>의도</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1. flippable row 파악</td>
+        <td>어느 위치에서 bit flip이 잘 나는지 먼저 확보</td>
+      </tr>
+      <tr>
+        <td>2. 초기 PT region 소모</td>
+        <td>page table을 계속 만들게 해서 전용 PT 공간을 채움</td>
+      </tr>
+      <tr>
+        <td>3. UVM allocation 반복</td>
+        <td>새 PT region이 user data 풀에서도 나오게 유도</td>
+      </tr>
+      <tr>
+        <td>4. eviction timing 관찰</td>
+        <td>GPU 메모리 압박과 새 region 생성 시점을 latency로 감지</td>
+      </tr>
+      <tr>
+        <td>5. hole 만들기</td>
+        <td>free를 이용해 취약 row 근처에 재사용 가능한 빈 공간 확보</td>
+      </tr>
+      <tr>
+        <td>6. PT region 재배치</td>
+        <td>다음 page table이 그 hole에 들어오도록 유도</td>
+      </tr>
+    </tbody>
+  </table>
+  <br>
+  <p>
+    정리하면, GPUBreach는 단순히 hammering만 잘한 것이 아니라
+    <strong>어느 row에서 flip이 잘 나는지</strong>와
+    <strong>민감한 메타데이터를 어디에 놓을지</strong>를 연결했다는 점이 중요합니다.
+    결국 exploitation 관점에서 제일 어려운 부분은 "flip 발생"보다
+    "그 flip이 의미 있는 구조물에 맞도록 만드는 것"인데,
+    이번 연구는 그 부분을 상당히 정교하게 밀어붙인 느낌입니다.
+  </p>
+  <p>
+    그래서 질문하신 표현으로 바꾸면, "page table 생성 시 어느 정도 분리된 공간이 있다가, 그것을 계속 page table로 채워 넣고,
+    이후에는 UVM 기반 allocation/migration의 느려지는 타이밍을 보고 새 PT region이 생길 시점을 잡은 다음,
+    원하는 위치에 PTE가 오도록 배치한다"는 이해가 꽤 맞는 방향이라고 보시면 될 것 같습니다.
+  </p>
+
+  <h3 id="section3-3">3. GPU 권한 상승에서 CPU 권한 상승으로 이어간다</h3>
+  <p>
+    이 연구에서 가장 중요한 부분은 단순히 "GPU에서 bit flip이 났다"가 아니라,
+    그 bit flip이 어떻게 <strong>권한 있는 메모리 접근 primitive</strong>로 이어지느냐입니다.
+    공개된 공식 페이지 기준으로 GPUBreach는 Rowhammer로 <strong>GPU page table entry(PTE)</strong>를 오염시키고,
+    그 결과 <strong>unprivileged CUDA kernel이 arbitrary GPU memory read/write</strong>를 얻게 된다고 설명합니다.
+  </p>
+  <p>
+    이 지점은 CPU 쪽 page table 공격과 비슷하게 이해하면 편합니다.
+    <strong>가상 페이지를 어떤 물리 페이지에 연결할지</strong>를 결정하는 것이 PTE이므로,
+    PTE의 일부 비트가 뒤집히면 원래는 접근하지 못하던 다른 페이지를 현재 CUDA 커널의 가상주소로 매핑시킬 수 있습니다.
+    공개 요약에는 세부 비트 필드 구조까지는 나오지 않지만, "GPU page-table tampering으로 arbitrary GPU memory R/W를 얻는다"는 설명상
+    공격자는 결국 <strong>자신이 읽고 쓸 수 있는 가상 페이지 하나를 더 강한 권한/다른 대상 물리 페이지로 다시 연결</strong>하는 식의 primitive를 얻는 것으로 이해할 수 있습니다.
+  </p>
+  <p>
+    왜 read만이 아니라 write도 가능하냐는 점도 같은 맥락입니다.
+    오염된 PTE가 어떤 민감한 GPU 물리 페이지를 현재 프로세스의 writable virtual page에 연결해버리면,
+    그 뒤에는 별도의 취약점 없이도 <strong>정상적인 store instruction 자체가 그 민감한 페이지에 대한 write</strong>가 됩니다.
+    즉, 핵심은 "취약점으로 직접 write gadget을 만든다"가 아니라
+    <strong>페이지 번역 결과를 바꿔서 정상 접근이 공격자가 원하는 대상에 도달하게 만든다</strong>는 쪽에 가깝습니다.
+  </p>
+  <p>
+    이 primitive를 얻으면 다음 단계는 GPU 내부 권한 상승입니다.
+    예를 들어 다른 프로세스의 GPU 메모리, 라이브러리 코드(cuBLAS SASS), 모델 weight, GPU DRAM 위의 키 자료 등을 읽거나 덮어쓸 수 있게 됩니다.
+    공식 페이지가 cross-process access, LLM weight leakage, cuPQC key leakage, cuBLAS branch tampering을 데모로 내세우는 이유도 이 때문입니다.
+  </p>
+  <p>
+    그리고 GPUBreach가 특히 강조하는 것은 <strong>여기서 끝나지 않는다</strong>는 점입니다.
+    GPU memory R/W를 얻은 뒤, 이를 이용해 <strong>NVIDIA 드라이버의 memory-safety bug</strong>를 트리거하여
+    CPU 측 privilege escalation로 이어갑니다.
+  </p>
+  <p>
+    여기서 <strong>IOMMU가 켜져 있는데도 왜 특별하냐</strong>를 짚고 넘어갈 필요가 있습니다.
+    일반적으로 PCIe 장치인 GPU가 CPU physical memory에 DMA를 하더라도, IOMMU는 "이 장치는 이 물리주소 범위까지만 접근 가능"하도록 제한합니다.
+    그래서 보통 DMA 공격은 IOMMU가 켜져 있으면 훨씬 어려워지거나, 아예 IOMMU를 꺼야 성립하는 경우가 많습니다.
+  </p>
+  <p>
+    그런데 GPUBreach는 IOMMU를 정면으로 깨는 것이 아니라, <strong>IOMMU가 원래 허용하고 있는 범위</strong>, 즉
+    GPU 드라이버가 소유한 CPU-side 버퍼 쪽을 노립니다.
+    공식 페이지 표현을 그대로 요약하면, 공격자는 <strong>PTE의 aperture bits</strong>를 이용해 GPU가 DMA할 수 있는 CPU 메모리 영역 중
+    드라이버 버퍼에 접근하고, 그 안의 <strong>신뢰된 메타데이터</strong>를 오염시킵니다.
+    그 다음에는 GPU가 직접 커널 전체 메모리를 막 쓰는 것이 아니라,
+    <strong>오염된 메타데이터를 읽은 NVIDIA 커널 드라이버가 CPU 커널 권한으로 out-of-bounds write를 수행</strong>하게 만듭니다.
+    즉 IOMMU는 제대로 동작하고 있었지만, 공격자가 그 안에서 드라이버 로직을 속여 커널 쓰기를 유도한 것입니다.
+  </p>
+  <p>
+    이 점이 중요한 이유는, 만약 "IOMMU를 꺼야만 가능한 공격"이라면 운영 환경에서는 비교적 강한 제약이 붙기 때문입니다.
+    하지만 GPUBreach는 <strong>IOMMU enabled가 기본인 일반적인 배포 환경</strong>에서도
+    GPU compromise가 CPU root shell로 이어질 수 있음을 보여줍니다.
+    즉 "DMA 차단만 해두면 된다"는 방어 가정이 충분하지 않다는 의미입니다.
+  </p>
+  <p>
+    즉 요약하면 공격 체인은 아래와 같습니다.
+  </p>
+  <ol>
+    <li>Rowhammer로 GPU page table bit flip 유도</li>
+    <li>오염된 PTE가 현재 프로세스의 virtual page를 다른 GPU 물리 페이지 또는 aperture-backed 대상에 연결</li>
+    <li>그 결과 정상적인 load/store만으로 arbitrary GPU memory R/W 확보</li>
+    <li>aperture bits를 이용해 IOMMU가 허용한 driver-owned CPU buffer를 손상</li>
+    <li>오염된 메타데이터를 처리하는 NVIDIA 드라이버의 memory-safety bug를 통해 CPU 커널 write primitive 획득</li>
+    <li>최종적으로 root shell 획득</li>
+  </ol>
+  <p>
+    이 정도면 이제 GPU Rowhammer는 더 이상 "흥미로운 하드웨어 현상" 정도가 아니라
+    <strong>실제 privilege escalation chain의 일부</strong>라고 봐야 할 것 같습니다.
+  </p>
+  <hr>
+
+  <h2 id="section4">무엇이 실제로 가능한가?</h2>
+  <p>
+    공식 페이지에서 정리한 데모/평가 항목을 보면 단순히 root shell 하나만 강조하는 연구는 아닙니다.
+    실제로는 아래와 같은 영향 범위를 보여줍니다.
+  </p>
+  <ul>
+    <li>GPU 메모리 임의 read/write 확보</li>
+    <li>time-sliced sharing 환경에서 cross-process 공격</li>
+    <li>GPU DRAM에 올라간 post-quantum crypto key 유출 가능성</li>
+    <li>cuBLAS 코드 분기 변조를 통한 더 stealthy한 ML output 조작</li>
+    <li>민감한 LLM weight 유출 가능성</li>
+    <li>궁극적으로 CPU 측 root shell</li>
+  </ul>
+  <p>
+    특히 개인적으로 흥미로웠던 부분은, 기존 GPUHammer가 weight bit flip으로 정확도를 깨뜨리는 방식이었다면
+    GPUBreach는 <strong>코드 경로 자체를 건드려 더 은밀하게 결과를 왜곡</strong>할 수 있다는 점입니다.
+    단순 데이터 corruption을 넘어, 이제는 GPU 상의 실행 로직과 메모리 격리 자체가 공격 표적이 되기 시작한 것 같습니다.
+  </p>
+  <p>
+    평가 대상은 NVIDIA RTX A6000(GDDR6) 계열 환경으로 소개되어 있으며,
+    이 점 역시 GPUHammer와 자연스럽게 이어지는 부분입니다.
+  </p>
+  <hr>
+
+  <h2 id="section5">동시기 연구와 비교하면</h2>
+  <p>
+    공식 페이지에서는 GPUBreach와 함께 <code>GDDRHammer</code>, <code>GeForge</code>라는 동시기 연구도 언급합니다.
+    세 연구 모두 GDDR6 기반 GPU에서 page table corruption을 통해 GPU 측 권한 상승으로 이어질 수 있다는 점을 보여준다고 합니다.
+  </p>
+  <p>
+    다만 GPUBreach가 특히 강조하는 차별점은 다음과 같습니다.
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>항목</th>
+        <th>GPUBreach</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>GPU page table corruption</td>
+        <td>지원</td>
+      </tr>
+      <tr>
+        <td>임의 GPU 메모리 R/W</td>
+        <td>지원</td>
+      </tr>
+      <tr>
+        <td>CPU 메모리 영향</td>
+        <td>가능</td>
+      </tr>
+      <tr>
+        <td>CPU privilege escalation</td>
+        <td>가능</td>
+      </tr>
+      <tr>
+        <td>IOMMU enabled 상태에서 동작</td>
+        <td>가능</td>
+      </tr>
+    </tbody>
+  </table>
+  <br>
+  <p>
+    결국 핵심은 <strong>IOMMU를 끄지 않아도 root shell까지 이어질 수 있다</strong>는 점으로 보입니다.
+    보통 방어 관점에서는 IOMMU 활성화가 중요한 기본 수칙인데, GPUBreach는 그 기본 수칙이 있어도
+    "신뢰된 드라이버 로직"을 우회 경로로 삼을 수 있음을 보여줍니다.
+  </p>
+  <p>
+    물론 이 공격은 특정 GPU, 특정 드라이버 조건, 정교한 메모리 massaging 등 여러 실험 조건이 필요하므로
+    당장 아무 환경에서나 쉽게 재현된다고 보긴 어렵습니다.
+    다만 연구 흐름을 보면, GPUHammer가 가능성을 열었고 GPUBreach가 exploitation 방향을 훨씬 더 밀어붙였다는 점은 분명해 보입니다.
+  </p>
+  <hr>
+
+  <h2 id="section6">마무리</h2>
+  <p>
+    개인적으로 이번 GPUBreach를 보면서 느낀 점은, 이제 GPU 보안도 더 이상 "AI 가속기니까 따로 보자" 수준이 아니라
+    CPU 쪽 메모리 공격 역사와 비슷한 단계로 빠르게 들어오고 있다는 것입니다.
+    예전에는 GPUHammer처럼 bit flip 자체를 보여주는 연구가 중심이었다면,
+    이제는 그 bit flip을 어떻게 exploit primitive로 바꾸고 실제 privilege escalation까지 이어가느냐가 핵심으로 넘어온 것 같습니다.
+  </p>
+  <p>
+    특히 AI/ML, GPU 클라우드, 고성능 연산 환경에서는 GPU 메모리에 모델 weight, 키, 중간 연산 결과, 드라이버 메타데이터 등
+    민감한 데이터가 많이 올라갑니다.
+    이런 환경에서 GPU Rowhammer가 page table corruption과 결합되기 시작했다는 점은 꽤 큰 경고로 보입니다.
+  </p>
+  <p>
+    정리하면 GPUBreach는 <strong>GPUHammer의 후속 진화형</strong>에 가깝고,
+    "GPU에서도 Rowhammer가 된다"를 넘어 <strong>"GPU Rowhammer로 privilege escalation도 가능하다"</strong>까지 보여준 연구라고 볼 수 있을 것 같습니다.
+    추후 시간이 되면 공개된 paper/artifact도 조금 더 자세히 읽어보고,
+    동시기 연구인 GDDRHammer, GeForge와도 비교해서 정리해보면 좋을 것 같습니다.
+  </p>
+</div>
